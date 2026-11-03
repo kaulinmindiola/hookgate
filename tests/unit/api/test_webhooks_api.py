@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from structlog.testing import capture_logs
-from tests.fakes import FixedClock, InMemoryEvents, RecordingPublisher
+from tests.fakes import FixedClock, InMemoryCache, InMemoryEvents, RecordingPublisher
 
 from hookgate.api.deps import MAX_BODY_BYTES
 from hookgate.api.main import create_app
@@ -44,7 +44,13 @@ def settings() -> Settings:
 def harness() -> Iterator[Harness]:
     events = InMemoryEvents()
     publisher = RecordingPublisher()
-    app = create_app(settings(), events=events.scope, clock=FixedClock(NOW), publisher=publisher)
+    app = create_app(
+        settings(),
+        events=events.scope,
+        clock=FixedClock(NOW),
+        publisher=publisher,
+        cache=InMemoryCache(),
+    )
     with TestClient(app) as client:
         yield Harness(client, events, publisher)
 

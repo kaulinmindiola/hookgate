@@ -1,6 +1,6 @@
-"""Fixtures for tests that need a real PostgreSQL (start it with `make up`).
+"""Fixtures for tests that need a real PostgreSQL and Redis (start them with `make up`).
 
-The tests use their own databases (``hookgate_test`` by default), created on demand,
+The tests use their own databases (``hookgate_test`` and Redis database 15 by default),
 so development data is never touched. Alembic is configured from ``alembic.ini``
 exactly as the ``alembic`` command line does, so a broken ini file fails here too.
 """
@@ -12,11 +12,14 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from redis import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from hookgate.infrastructure.cache import RedisDedupeCache
 from hookgate.infrastructure.db.engine import create_db_engine, create_session_factory
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +28,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TEST_DATABASE_URL = (
     "postgresql+psycopg://hookgate:hookgate@127.0.0.1:5432/hookgate_test?connect_timeout=5"
 )
+DEFAULT_TEST_REDIS_URL = "redis://127.0.0.1:6379/15"
+# Generous on purpose: correctness tests must not fail on a slow CI runner. The 50 ms
+# production timeout is exercised by the dedicated unreachable-Redis tests.
+TEST_REDIS_TIMEOUT_S = 1.0
 TABLES = "applied_effects, event_attempts, event_transitions, payments, webhook_events"
 
 
@@ -89,3 +96,27 @@ def clean_tables(engine: Engine) -> None:
     """Every integration test starts from empty tables."""
     with engine.begin() as connection:
         connection.execute(text(f"TRUNCATE TABLE {TABLES} RESTART IDENTITY CASCADE"))
+
+
+@pytest.fixture(scope="session")
+def redis_url() -> str:
+    url = os.environ.get("TEST_REDIS_URL", DEFAULT_TEST_REDIS_URL)
+    client = Redis.from_url(url, socket_timeout=2, socket_connect_timeout=2)
+    try:
+        client.ping()
+    except RedisError as exc:
+        pytest.fail(f"Redis is not reachable at {url}. Run `make up`.\n{exc}", pytrace=False)
+    finally:
+        client.close()
+    return url
+
+
+@pytest.fixture
+def dedupe_cache(redis_url: str) -> Iterator[RedisDedupeCache]:
+    """A cache on an empty test database, so markers never leak between tests."""
+    client = Redis.from_url(redis_url)
+    client.flushdb()
+    client.close()
+    cache = RedisDedupeCache.from_url(redis_url, ttl_s=60, socket_timeout_s=TEST_REDIS_TIMEOUT_S)
+    yield cache
+    cache.close()

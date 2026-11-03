@@ -2,6 +2,8 @@
 
 Run locally with: ``uv run uvicorn hookgate.api.main:create_app --factory``.
 The factory takes optional collaborators so tests can inject fakes or a test database.
+By default it connects to PostgreSQL and Redis from the settings; the Prometheus
+metrics adapter arrives in phase F9 (until then cache errors are logged only).
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -14,8 +16,15 @@ from hookgate.api.deps import TRACE_HEADER, resolve_trace_id
 from hookgate.api.errors import register_error_handlers
 from hookgate.api.routers import health, webhooks
 from hookgate.application.ingest_event import IngestEvent
-from hookgate.application.ports import Clock, EventPublisher, EventStoreScope
+from hookgate.application.ports import (
+    Clock,
+    DedupeCache,
+    EventPublisher,
+    EventStoreScope,
+    IngestionMetrics,
+)
 from hookgate.config import Settings, get_settings
+from hookgate.infrastructure.cache import RedisDedupeCache
 from hookgate.infrastructure.clock import SystemClock
 from hookgate.infrastructure.db.engine import create_db_engine, create_session_factory
 from hookgate.infrastructure.db.transactions import event_store_scope
@@ -40,6 +49,8 @@ def create_app(
     events: EventStoreScope | None = None,
     clock: Clock | None = None,
     publisher: EventPublisher | None = None,
+    cache: DedupeCache | None = None,
+    metrics: IngestionMetrics | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     configure_logging()
@@ -50,9 +61,19 @@ def create_app(
             engine = owned_engine = create_db_engine(settings.database_url)
         events = event_store_scope(create_session_factory(engine))
 
+    owned_cache: RedisDedupeCache | None = None
+    if cache is None:
+        cache = owned_cache = RedisDedupeCache.from_url(
+            settings.redis_url,
+            ttl_s=settings.dedupe_ttl_s,
+            socket_timeout_s=settings.redis_socket_timeout_s,
+        )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
+        if owned_cache is not None:
+            owned_cache.close()
         if owned_engine is not None:
             owned_engine.dispose()
 
@@ -63,6 +84,8 @@ def create_app(
         clock=clock or SystemClock(),
         events=events,
         publisher=publisher or NullPublisher(),
+        cache=cache,
+        metrics=metrics,
     )
     app.middleware("http")(_trace_id_middleware)
     register_error_handlers(app)
