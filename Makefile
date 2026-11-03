@@ -1,4 +1,4 @@
-.PHONY: install up down migrate format lint types test test-integration chaos check
+.PHONY: install up down migrate run format lint types test test-integration chaos check
 
 install:
 	uv sync
@@ -11,6 +11,9 @@ down:
 
 migrate:
 	uv run alembic upgrade head
+
+run:
+	uv run uvicorn hookgate.api.main:create_app --factory --host 127.0.0.1 --port 8000
 
 format:
 	uv run ruff format .
