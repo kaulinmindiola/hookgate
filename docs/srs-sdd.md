@@ -86,6 +86,8 @@ Body (JSON):
 
 The provider gives no ordering guarantee and may deliver the same `id` many times. Events carry a **full snapshot** of the resource (this assumption makes ordering safe; see 13).
 
+The snapshot carries `amount` (integer, minor units, >= 0) and `currency` (three uppercase letters). Both are validated by the handler, not at ingestion.
+
 ### 2.4 Delivery guarantee
 
 At-least-once receipt, effectively-once effect. Hookgate does not claim exactly-once delivery; it makes repeated delivery harmless.
@@ -314,7 +316,7 @@ Alembic owns the schema; migrations run in a one-shot compose service before the
 
 Terminal: `processed`. Forbidden: any transition out of `processed`; `dead → processing` (must pass through `received`).
 
-The transition table is a pure domain function `transition(state, trigger) -> state` that raises `InvalidTransition`. The application layer persists the result and writes the audit row in the same transaction.
+The transition table is a pure domain function `transition(status, trigger, *, attempts, max_attempts) -> TransitionResult` that raises `InvalidTransition`. The result names the target status and what happens to `attempts`, `locked_until` and `next_attempt_at` (ADR-011). The application layer persists the result and writes the audit row in the same transaction.
 
 ## 10. Ingestion design
 
