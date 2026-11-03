@@ -16,7 +16,7 @@ types:
 	uv run mypy
 
 test:
-	uv run pytest -m "not chaos"
+	uv run pytest -m "not chaos" --cov=hookgate.domain --cov-report=term-missing --cov-fail-under=80
 
 chaos:
 	@echo "No chaos tests yet (they arrive in phase F11)."
