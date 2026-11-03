@@ -50,5 +50,5 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --locked
-      - name: Pytest (chaos tests excluded)
-        run: uv run pytest -m "not chaos"
+      - name: Pytest with domain coverage gate (NFR-4)
+        run: uv run pytest -m "not chaos" --cov=hookgate.domain --cov-report=term-missing --cov-fail-under=80
