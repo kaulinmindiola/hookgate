@@ -9,14 +9,23 @@ Payment providers deliver webhooks at-least-once: duplicates, delays, reordering
 
 ## Development
 
-Requirements: Python 3.12 and [uv](https://docs.astral.sh/uv/).
+Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/) and Docker with Compose.
 
 ```bash
-make install   # create the virtualenv and install dependencies
-make check     # lint + types + tests
+make install                  # create the virtualenv and install dependencies
+cp .env.example .env          # local development values (PowerShell: Copy-Item .env.example .env)
+make up                       # start PostgreSQL, Redis and RabbitMQ and wait until healthy
+make migrate                  # apply the database migrations
+make check                    # lint + types + unit/property tests + integration tests
 ```
 
-Other targets: `make format`, `make lint`, `make types`, `make test`, `make chaos`.
+Other targets: `make format`, `make lint`, `make types`, `make test` (no database needed), `make test-integration` (needs `make up`), `make down`, `make chaos`.
+
+Integration tests use their own databases (`hookgate_test`, created on demand); set `TEST_DATABASE_URL` to point them elsewhere.
+
+## Decisions
+
+- [ADR-001: PostgreSQL is the source of truth](docs/adr/001-postgresql-source-of-truth.md)
 
 ## License
 
