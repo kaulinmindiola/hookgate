@@ -349,6 +349,8 @@ Two layers with distinct roles: **PostgreSQL decides, Redis only saves work.**
 | Crash after commit, before SET | Marker missing; next duplicate is caught by PostgreSQL. |
 | Marker exists but row missing | Cannot happen by construction (SET after commit); only after a database restore, where a redelivered event is treated as a duplicate and never re-inserted until its marker expires, a lost event that the provider's next retry cannot fix. Runbook: flush the Redis dedupe keys after any restore. Documented as a limitation. |
 
+**Implementation notes (phase F4).** Marker key `hookgate:dedupe:<provider>:<event_id>`, value `1`, TTL `DEDUPE_TTL_S`. The Redis client uses `REDIS_SOCKET_TIMEOUT_S` for connect and read and has client retries disabled: redis-py retries connection and timeout errors by default with backoff, which would add seconds per delivery during an outage. The marker is written after the commit for accepted events and also when PostgreSQL detects a duplicate (the row exists, so re-marking is safe). Limitation: a duplicate short-circuited by a Redis hit is not compared with the stored body, so FR-IDE-6 is detected only on the PostgreSQL path. Until the Prometheus adapter (phase F9), cache errors are counted through the `IngestionMetrics` port in tests and logged as `cache_error` in the running service.
+
 **Effect idempotency** is separate from receipt idempotency: even if two deliveries somehow reached processing, `applied_effects.event_id` is a primary key written in the same transaction as the projection, and the claim CAS prevents concurrent processing.
 
 ## 12. Processing design
