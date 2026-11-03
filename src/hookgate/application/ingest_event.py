@@ -1,8 +1,10 @@
-"""Ingest one signed webhook delivery (FR-ING-1..7, FR-IDE-1/2/5/6, SDD 6.2 and 10).
+"""Ingest one signed webhook delivery (FR-ING-1..7, FR-IDE-1..6, SDD 6.2, 10 and 11).
 
-Order of checks: signature and timestamp first, then the minimal envelope. The raw
-bytes are stored exactly as received and the transaction commits before anything is
-published, so an acknowledged event is always durable (ADR-001).
+Order: signature and timestamp, minimal envelope, Redis marker (fast path), then the
+PostgreSQL insert, which decides. The raw bytes are stored exactly as received and the
+transaction commits before the marker is written or anything is published, so an
+acknowledged event is always durable (ADR-001) and a marker never exists for an event
+that was not stored (ADR-003). Any cache failure degrades to PostgreSQL (FR-IDE-4).
 """
 
 from collections.abc import Mapping, Sequence
@@ -13,8 +15,16 @@ from uuid import UUID
 
 import structlog
 from pydantic import AwareDatetime, BaseModel, ConfigDict, StringConstraints, ValidationError
+from structlog.typing import FilteringBoundLogger
 
-from hookgate.application.ports import Clock, EventPublisher, EventStoreScope
+from hookgate.application.ports import (
+    CacheOp,
+    Clock,
+    DedupeCache,
+    EventPublisher,
+    EventStoreScope,
+    IngestionMetrics,
+)
 from hookgate.application.records import NewEvent
 from hookgate.domain.errors import SignatureError
 from hookgate.domain.events import EventIdentity
@@ -103,6 +113,8 @@ class IngestEvent:
         clock: Clock,
         events: EventStoreScope,
         publisher: EventPublisher,
+        cache: DedupeCache | None = None,
+        metrics: IngestionMetrics | None = None,
         provider: str = DEFAULT_PROVIDER,
     ) -> None:
         self._secret = secret
@@ -110,6 +122,8 @@ class IngestEvent:
         self._clock = clock
         self._events = events
         self._publisher = publisher
+        self._cache = cache
+        self._metrics = metrics
         self._provider = provider
 
     def __call__(self, command: IngestCommand) -> IngestResult:
@@ -147,6 +161,12 @@ class IngestEvent:
             trace_id=command.trace_id,
         )
 
+        if self._marker_exists(new.identity, log):
+            # Known event: skip the database. A changed body is not detected on this
+            # path (FR-IDE-6 is checked only when PostgreSQL detects the duplicate).
+            log.info("webhook_duplicate", layer="redis")
+            return IngestResult(IngestStatus.DUPLICATE, envelope.id, None)
+
         original_body: bytes | None = None
         with self._events() as store:
             stored_id = store.insert_if_new(new)
@@ -158,12 +178,37 @@ class IngestEvent:
             if original_body is not None and original_body != command.raw_body:
                 log.warning("payload_mismatch", layer="postgres")
             log.info("webhook_duplicate", layer="postgres")
+            self._write_marker(new.identity, log)  # the row exists: safe to re-mark
             return IngestResult(IngestStatus.DUPLICATE, envelope.id, None)
 
         log.info("webhook_accepted", status="received")
+        self._write_marker(new.identity, log)
         try:
             self._publisher.publish(stored_id, trace_id=command.trace_id)
         except Exception as exc:
             # FR-ING-7: the provider still gets 202; the sweeper recovers the event.
             log.warning("publish_failed", error=type(exc).__name__)
         return IngestResult(IngestStatus.ACCEPTED, envelope.id, stored_id)
+
+    def _marker_exists(self, identity: EventIdentity, log: FilteringBoundLogger) -> bool:
+        if self._cache is None:
+            return False
+        try:
+            return self._cache.seen(identity)
+        except Exception as exc:
+            self._cache_failed("get", exc, log)
+            return False
+
+    def _write_marker(self, identity: EventIdentity, log: FilteringBoundLogger) -> None:
+        if self._cache is None:
+            return
+        try:
+            self._cache.remember(identity)
+        except Exception as exc:
+            # Best effort: a missing marker only costs one database round trip later.
+            self._cache_failed("set", exc, log)
+
+    def _cache_failed(self, op: CacheOp, exc: Exception, log: FilteringBoundLogger) -> None:
+        if self._metrics is not None:
+            self._metrics.cache_error(op)
+        log.warning("cache_error", op=op, error=type(exc).__name__)

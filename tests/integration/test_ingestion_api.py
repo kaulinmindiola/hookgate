@@ -1,4 +1,4 @@
-"""POST /webhooks/payments against a real PostgreSQL (FR-ING-5, FR-IDE-2/5/6)."""
+"""POST /webhooks/payments against a real PostgreSQL and Redis (FR-ING-5, FR-IDE-2..6)."""
 
 import json
 from collections.abc import Iterator
@@ -16,6 +16,7 @@ from hookgate.config import Settings
 from hookgate.domain.events import EventIdentity
 from hookgate.domain.signature import build_signature_header
 from hookgate.domain.states import EventStatus
+from hookgate.infrastructure.cache import RedisDedupeCache
 from hookgate.infrastructure.db.engine import session_scope
 from hookgate.infrastructure.db.repositories import EventRepository
 
@@ -26,17 +27,22 @@ NOW = datetime(2026, 11, 3, 12, 0, 0, tzinfo=UTC)
 URL = "/webhooks/payments"
 
 
-@pytest.fixture
-def client(database_url: str, engine: Engine) -> Iterator[TestClient]:
+def make_client(database_url: str, engine: Engine, cache: RedisDedupeCache) -> TestClient:
     settings = Settings(
         database_url=database_url,
-        redis_url="redis://127.0.0.1:6379/0",
+        redis_url="redis://unused",
         broker_url="amqp://unused:unused@127.0.0.1:5672//",
         webhook_secret=SecretStr(SECRET),
         admin_api_key=SecretStr("unused-admin-key"),
     )
-    app = create_app(settings, engine=engine, clock=FixedClock(NOW))
-    with TestClient(app) as test_client:
+    return TestClient(create_app(settings, engine=engine, clock=FixedClock(NOW), cache=cache))
+
+
+@pytest.fixture
+def client(
+    database_url: str, engine: Engine, dedupe_cache: RedisDedupeCache
+) -> Iterator[TestClient]:
+    with make_client(database_url, engine, dedupe_cache) as test_client:
         yield test_client
 
 
@@ -114,3 +120,28 @@ def test_rejected_deliveries_persist_nothing(
 
     assert (unsigned, not_json) == (401, 400)
     assert count_events(session_factory) == 0
+
+
+def test_accepted_event_leaves_a_redis_marker(
+    client: TestClient, dedupe_cache: RedisDedupeCache
+) -> None:
+    assert post(client, body()) == (202, "accepted")
+
+    assert dedupe_cache.seen(EventIdentity("sim", "evt_1")) is True
+
+
+def test_unreachable_redis_degrades_to_postgres(
+    database_url: str, engine: Engine, session_factory: sessionmaker[Session]
+) -> None:
+    unreachable = RedisDedupeCache.from_url(
+        "redis://127.0.0.1:1/0", ttl_s=60, socket_timeout_s=0.05
+    )
+    try:
+        with make_client(database_url, engine, unreachable) as degraded:
+            first = post(degraded, body())
+            second = post(degraded, body())
+    finally:
+        unreachable.close()
+
+    assert (first, second) == ((202, "accepted"), (202, "duplicate"))
+    assert count_events(session_factory) == 1
