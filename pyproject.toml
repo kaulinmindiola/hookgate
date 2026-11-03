@@ -5,7 +5,12 @@ description = "Receives payment-provider webhooks without losing events and with
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "MIT" }
-dependencies = []
+dependencies = [
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "pydantic-settings>=2.5",
+    "sqlalchemy>=2.0.36",
+]
 
 [dependency-groups]
 dev = [
@@ -42,7 +47,9 @@ explicit_package_bases = true
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra --strict-markers"
+faulthandler_timeout = 120
 markers = [
+    "integration: tests that need a real PostgreSQL (start it with `make up`)",
     "chaos: tests that kill processes or stop services (run in the dedicated chaos job)",
 ]
 

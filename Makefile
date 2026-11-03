@@ -1,9 +1,19 @@
-.PHONY: install format lint types test chaos check
+.PHONY: install up down migrate format lint types test test-integration chaos check
 
 install:
 	uv sync
 
+up:
+	docker compose up -d --wait postgres redis rabbitmq
+
+down:
+	docker compose down
+
+migrate:
+	uv run alembic upgrade head
+
 format:
+	uv run ruff format .
 	uv run ruff check --fix .
 	uv run ruff format .
 
@@ -16,9 +26,12 @@ types:
 	uv run mypy
 
 test:
-	uv run pytest -m "not chaos" --cov=hookgate.domain --cov-report=term-missing --cov-fail-under=80
+	uv run pytest -m "not chaos and not integration" --cov=hookgate.domain --cov-report=term-missing --cov-fail-under=80
+
+test-integration:
+	uv run pytest -m integration
 
 chaos:
 	@echo "No chaos tests yet (they arrive in phase F11)."
 
-check: lint types test
+check: lint types test test-integration
