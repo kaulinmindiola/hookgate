@@ -332,7 +332,9 @@ ON CONFLICT (provider, event_id) DO NOTHING
 RETURNING id;
 ```
 
-No row returned means duplicate. On duplicate, the stored body hash is compared with the incoming one to detect FR-IDE-6.
+No row returned means duplicate. On duplicate, the stored raw body is compared byte for byte with the incoming one to detect FR-IDE-6 (no hash column is needed).
+
+**HTTP contract (phase F3).** Checks run in this order: body size (413 above 1 MiB), signature and timestamp (401 with `missing_signature`, `malformed_signature`, `invalid_signature` or `timestamp_out_of_tolerance`), minimal envelope (400 `invalid_payload`, listing field paths but never echoing values). `occurred_at` must carry a timezone. Stored headers are limited to `content-type`, `user-agent`, `hookgate-signature` and `x-trace-id`. The trace id is taken from `X-Trace-Id` when it matches `[A-Za-z0-9._:-]{1,128}`, otherwise generated, and is echoed in the response. The single provider is identified as `sim`. Publishing happens only after the insert commits; a publish failure is logged and the response is still 202.
 
 ## 11. Idempotency design
 
