@@ -369,6 +369,8 @@ Defaults: `max_attempts=5`, `base=2 s`, `cap=300 s`. The next attempt time is st
 
 **Duplicate task messages are expected** (acks\_late redelivery, sweeper overlap). The claim CAS makes them no-ops. The sweeper changes state inside its transaction and publishes to the broker only after commit; a failed publish is retried on the next sweep.
 
+**Implementation notes (phase F5).** Processing uses three short transactions: (1) claim plus an open `event_attempts` row, committed before any work; (2) the effect: the `processing -> processed` transition first (compare-and-set on status *and* `attempts`, which locks the row and proves the claim is still ours), then the projection and `applied_effects`, all committed together; (3) only if (2) raised, the failure: a separate transaction records `failed` with `next_attempt_at = now() + delay` or `dead`, and closes the attempt row. A worker whose lease expired and whose event was claimed again sees its compare-and-set fail and writes nothing (outcome `lost`). Time decision (P3, confirmed): PostgreSQL's `now()` is the only clock for leases and retry times; the jittered delay is drawn in Python and added in SQL. Tests move time by back-dating `next_attempt_at` and `locked_until`; chaos tests will use `LEASE_S=2`.
+
 ## 13. Ordering design
 
 Inside the processing transaction:
@@ -465,7 +467,7 @@ Import rule check (domain must not import infrastructure or framework code) runs
 
 ### 17.1 How the hard tests work
 
-- **Hypothesis (VR-1, VR-2).** Strategy draws events from a small id pool to force duplicates, uses `st.permutations` and repeat counts, runs through the application use cases against a real database inside rolled-back transactions, with processing invoked directly (no broker) for speed. Assertions: row count equals distinct ids, `applied_effects` count equals distinct applied events, final projection equals the oracle (latest event per resource).
+- **Hypothesis (VR-1, VR-2).** Strategy draws events from a small id pool to force duplicates, uses `st.permutations` and repeat counts, runs through the application use cases against a real database, truncating the tables at the start of each example (the claim and the transitions need real commits, so rolled-back transactions cannot be used), with processing invoked directly (no broker) for speed. Assertions: row count equals distinct ids, `applied_effects` count equals distinct applied events, final projection equals the oracle (latest event per resource).
 - **Redis outage (VR-3).** Unit level with a `FaultyCache` that raises after N calls; integration level stops the Redis container mid-sequence and restarts it.
 - **Worker kill (VR-4).** Start a real worker subprocess; a test-only handler hook blocks and signals through a file; the test sends SIGKILL, starts a new worker, advances past the lease, and asserts a single effect.
 - **Transient and poison (VR-5, VR-6).** A configurable failing handler with an injected clock and RNG; assertions on delays, attempts, audit rows and final status.
