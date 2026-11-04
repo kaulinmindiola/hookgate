@@ -5,12 +5,15 @@ Adapters live in ``hookgate.infrastructure``; tests use in-memory fakes.
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, Protocol
 from uuid import UUID
 
-from hookgate.application.records import NewEvent
+from hookgate.application.records import NewEvent, StoredEvent
 from hookgate.domain.events import EventIdentity
+from hookgate.domain.outcomes import EventOutcome
+from hookgate.domain.payments import Payment
+from hookgate.domain.states import TransitionResult
 
 
 class Clock(Protocol):
@@ -60,3 +63,44 @@ class IngestionMetrics(Protocol):
     """Counters recorded by ingestion. The Prometheus adapter arrives in phase F9."""
 
     def cache_error(self, op: CacheOp) -> None: ...
+
+
+class ProcessingEvents(Protocol):
+    """The slice of the event repository that processing uses (SDD 6.3, ADR-011)."""
+
+    def claim(self, event_id: UUID, *, lease_s: int) -> StoredEvent | None: ...
+
+    def start_attempt(self, event_id: UUID, attempt_no: int) -> int: ...
+
+    def finish_attempt(self, attempt_id: int, *, result: str, error: str | None) -> None: ...
+
+    def apply_transition(
+        self,
+        event_id: UUID,
+        result: TransitionResult,
+        *,
+        retry_after: timedelta | None = None,
+        last_error: str | None = None,
+        outcome: EventOutcome | None = None,
+        expected_attempts: int | None = None,
+    ) -> bool: ...
+
+
+class PaymentEffects(Protocol):
+    def apply(self, payment: Payment, event_id: UUID) -> None:
+        """Write the projection and the ``applied_effects`` row (same transaction)."""
+        ...
+
+
+class ProcessingUnit(Protocol):
+    """Repositories that share one transaction."""
+
+    @property
+    def events(self) -> ProcessingEvents: ...
+
+    @property
+    def payments(self) -> PaymentEffects: ...
+
+
+# Opens one transaction: commits when the block exits cleanly, rolls back otherwise.
+ProcessingScope = Callable[[], AbstractContextManager[ProcessingUnit]]
