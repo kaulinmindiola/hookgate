@@ -20,9 +20,17 @@ make run                      # start the API on http://127.0.0.1:8000
 make check                    # lint + types + unit/property tests + integration tests
 ```
 
-Other targets: `make format`, `make lint`, `make types`, `make test` (no database needed), `make test-integration` (needs `make up`), `make down`, `make chaos`.
+Other targets: `make format`, `make lint`, `make types`, `make test` (no database needed), `make test-integration` (needs `make up`), `make worker` (Celery worker against the local infrastructure), `make down`, `make chaos`.
 
 Integration tests use their own databases (`hookgate_test`, created on demand); set `TEST_DATABASE_URL` to point them elsewhere.
+
+## Running the whole system
+
+```bash
+docker compose up --build       # or: make stack (detached), then make logs
+```
+
+This builds one image and starts PostgreSQL, Redis, RabbitMQ, a one-shot `migrate` job, the `api` on http://127.0.0.1:8000, the Celery `worker` (thread pool) and `beat` (runs the sweeper every 15 s). Stop `make run` first if it is using port 8000. A signed webhook sent as shown below is then processed by the worker; `docker compose logs -f worker` shows its JSON log lines with the `trace_id`.
 
 ## Sending a signed webhook
 
@@ -58,6 +66,9 @@ Responses: `202 accepted` or `202 duplicate`; `401` with `missing_signature`, `m
 ## Decisions
 
 - [ADR-001: PostgreSQL is the source of truth](docs/adr/001-postgresql-source-of-truth.md)
+- [ADR-002: RabbitMQ as the broker, separate from the Redis cache](docs/adr/002-rabbitmq-broker.md)
+- [ADR-007: Lease plus sweeper instead of broker redelivery](docs/adr/007-lease-and-sweeper.md)
+- [ADR-012: Celery worker uses the thread pool](docs/adr/012-celery-thread-pool.md)
 
 ## License
 

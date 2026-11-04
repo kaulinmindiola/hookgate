@@ -60,6 +60,7 @@ class ProcessResult:
     attempt: int | None = None
     error: str | None = None
     event_outcome: EventOutcome | None = None  # applied or ignored_stale, when processed
+    retry_after_s: float | None = None  # when a retry was scheduled
 
 
 class _ClaimLost(Exception):
@@ -198,4 +199,9 @@ class ProcessEvent:
             error=type(exc).__name__,
             retry_after_s=retry_after.total_seconds() if retry_after else None,
         )
-        return ProcessResult(ProcessOutcome.RETRY_SCHEDULED, claimed.attempts, error)
+        return ProcessResult(
+            ProcessOutcome.RETRY_SCHEDULED,
+            claimed.attempts,
+            error,
+            retry_after_s=retry_after.total_seconds() if retry_after else None,
+        )

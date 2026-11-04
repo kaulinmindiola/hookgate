@@ -10,12 +10,13 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import Row, Table, func, insert, or_, select, tuple_, update
+from sqlalchemy import Row, Table, and_, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from hookgate.application.records import (
     AttemptRecord,
+    DueEvent,
     NewEvent,
     StoredEvent,
     TransitionRecord,
@@ -308,6 +309,58 @@ class EventRepository:
             .where(_ATTEMPTS.c.id == attempt_id)
             .values(finished_at=func.now(), result=result, error=error)
         )
+
+    def close_open_attempts(self, event_id: uuid.UUID, *, result: str, error: str) -> None:
+        """Close attempt rows a dead worker left open (evidence stays, marked as such)."""
+        self._session.execute(
+            update(_ATTEMPTS)
+            .where(_ATTEMPTS.c.event_id == event_id, _ATTEMPTS.c.finished_at.is_(None))
+            .values(finished_at=func.now(), result=result, error=error)
+        )
+
+    # -- sweeper (FR-PRO-7, SDD 12) ----------------------------------------------
+
+    def lock_expired_leases(self, *, limit: int) -> list[StoredEvent]:
+        """``processing`` events whose lease ended, locked; rows other sweepers hold are skipped."""
+        statement = (
+            select(_EVENTS)
+            .where(
+                _EVENTS.c.status == EventStatus.PROCESSING,
+                _EVENTS.c.locked_until < func.now(),
+            )
+            .order_by(_EVENTS.c.locked_until)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return [_to_stored(row) for row in self._session.execute(statement)]
+
+    def lock_due_for_publish(self, *, limit: int, received_grace_s: int) -> list[DueEvent]:
+        """Events to enqueue again, locked; rows other sweepers hold are skipped.
+
+        ``received`` older than the grace period (its first message was probably lost)
+        and ``failed`` whose retry time has come.
+        """
+        statement = (
+            select(_EVENTS.c.id, _EVENTS.c.trace_id)
+            .where(
+                or_(
+                    and_(
+                        _EVENTS.c.status == EventStatus.RECEIVED,
+                        _EVENTS.c.received_at < func.now() - timedelta(seconds=received_grace_s),
+                    ),
+                    and_(
+                        _EVENTS.c.status == EventStatus.FAILED,
+                        _EVENTS.c.next_attempt_at <= func.now(),
+                    ),
+                )
+            )
+            .order_by(_EVENTS.c.received_at, _EVENTS.c.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return [
+            DueEvent(id=row.id, trace_id=row.trace_id) for row in self._session.execute(statement)
+        ]
 
     # -- internals ---------------------------------------------------------------
 

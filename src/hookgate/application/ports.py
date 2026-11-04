@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Literal, Protocol
 from uuid import UUID
 
-from hookgate.application.records import NewEvent, StoredEvent
+from hookgate.application.records import DueEvent, NewEvent, StoredEvent
 from hookgate.domain.events import EventIdentity
 from hookgate.domain.ordering import OrderingKey
 from hookgate.domain.outcomes import EventOutcome
@@ -109,3 +109,28 @@ class ProcessingUnit(Protocol):
 
 # Opens one transaction: commits when the block exits cleanly, rolls back otherwise.
 ProcessingScope = Callable[[], AbstractContextManager[ProcessingUnit]]
+
+
+class SweepEvents(Protocol):
+    """The slice of the event repository that the sweeper uses (FR-PRO-7, SDD 12)."""
+
+    def lock_expired_leases(self, *, limit: int) -> list[StoredEvent]: ...
+
+    def lock_due_for_publish(self, *, limit: int, received_grace_s: int) -> list[DueEvent]: ...
+
+    def close_open_attempts(self, event_id: UUID, *, result: str, error: str) -> None: ...
+
+    def apply_transition(
+        self,
+        event_id: UUID,
+        result: TransitionResult,
+        *,
+        retry_after: timedelta | None = None,
+        last_error: str | None = None,
+        outcome: EventOutcome | None = None,
+        expected_attempts: int | None = None,
+    ) -> bool: ...
+
+
+# Opens one transaction: commits when the block exits cleanly, rolls back otherwise.
+SweepScope = Callable[[], AbstractContextManager[SweepEvents]]
