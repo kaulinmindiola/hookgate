@@ -398,6 +398,8 @@ Event types for the demo domain: `payment.created`, `payment.authorized`, `payme
 
 Replay is safe to repeat: the CAS succeeds once, so concurrent calls enqueue once.
 
+**Implementation notes (phase F8).** The audit reason of a replay is the trigger value `operator_replay`. The CAS is the state machine decision `transition(dead, replay)` applied with `UPDATE ... WHERE status = 'dead'`; a loser of a concurrent replay re-reads the row and gets 409. `limit` is 1 to 200 (default 50) and one extra row is read to decide whether `next_cursor` is returned; the cursor is opaque (URL-safe base64 of `received_at|id`). `X-API-Key` is checked before the request parameters are validated, so unauthenticated callers only ever see 401. The replay keeps the original `received_at`, so a replayed event that is not processed within one sweep interval can receive a second, harmless message from the sweeper (the claim CAS makes it a no-op).
+
 ## 15. Simulator and observability design
 
 ### 15.1 Simulator scenarios
