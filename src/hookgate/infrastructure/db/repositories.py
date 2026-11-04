@@ -1,7 +1,8 @@
 """Event repository: idempotent insert, atomic claim, compare-and-set transitions.
 
 Methods never commit: the caller owns the transaction (``session_scope``).
-Time comparisons use the database clock (``now()``), which is authoritative (ADR-011).
+Time comparisons and stored times use the database clock (``now()``), which is
+authoritative (ADR-011, decision P3): tests move time by back-dating columns.
 """
 
 import uuid
@@ -13,7 +14,12 @@ from sqlalchemy import Row, Table, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from hookgate.application.records import NewEvent, StoredEvent, TransitionRecord
+from hookgate.application.records import (
+    AttemptRecord,
+    NewEvent,
+    StoredEvent,
+    TransitionRecord,
+)
 from hookgate.domain.errors import InvalidTransition
 from hookgate.domain.events import EventIdentity
 from hookgate.domain.outcomes import EventOutcome
@@ -25,10 +31,11 @@ from hookgate.domain.states import (
     Trigger,
     transition,
 )
-from hookgate.infrastructure.db.models import EventTransitionRow, WebhookEventRow
+from hookgate.infrastructure.db.models import EventAttemptRow, EventTransitionRow, WebhookEventRow
 
 _EVENTS = cast(Table, WebhookEventRow.__table__)
 _TRANSITIONS = cast(Table, EventTransitionRow.__table__)
+_ATTEMPTS = cast(Table, EventAttemptRow.__table__)
 
 
 def _claim_rule() -> tuple[tuple[EventStatus, ...], EventStatus]:
@@ -159,6 +166,21 @@ class EventRepository:
             for row in self._session.execute(statement)
         ]
 
+    def list_attempts(self, event_id: uuid.UUID) -> list[AttemptRecord]:
+        statement = (
+            select(_ATTEMPTS).where(_ATTEMPTS.c.event_id == event_id).order_by(_ATTEMPTS.c.id)
+        )
+        return [
+            AttemptRecord(
+                attempt_no=row._mapping["attempt_no"],
+                started_at=row._mapping["started_at"],
+                finished_at=row._mapping["finished_at"],
+                result=row._mapping["result"],
+                error=row._mapping["error"],
+            )
+            for row in self._session.execute(statement)
+        ]
+
     # -- processing --------------------------------------------------------------
 
     def claim(self, event_id: uuid.UUID, *, lease_s: int) -> StoredEvent | None:
@@ -203,13 +225,18 @@ class EventRepository:
         result: TransitionResult,
         *,
         next_attempt_at: datetime | None = None,
+        retry_after: timedelta | None = None,
         last_error: str | None = None,
         outcome: EventOutcome | None = None,
+        expected_attempts: int | None = None,
     ) -> bool:
         """Apply a domain decision with a compare-and-set on ``result.from_status``.
 
         Returns False (and writes nothing) when the event is no longer in that status.
-        Claims go through ``claim()``: they need the database clock for the lease.
+        ``expected_attempts`` also pins the attempt number: a worker whose lease expired
+        and whose event was claimed again (higher ``attempts``) can no longer write.
+        A retry is scheduled either at ``next_attempt_at`` or at ``now() + retry_after``
+        (database clock). Claims go through ``claim()``: they need the database clock.
         """
         if result.trigger is Trigger.CLAIM:
             raise ValueError("claims must go through claim()")
@@ -229,9 +256,16 @@ class EventRepository:
         if result.next_attempt_at is ColumnAction.CLEAR:
             values["next_attempt_at"] = None
         elif result.next_attempt_at is ColumnAction.SET:
-            if next_attempt_at is None:
-                raise ValueError("next_attempt_at is required when scheduling a retry")
-            values["next_attempt_at"] = next_attempt_at
+            if (next_attempt_at is None) == (retry_after is None):
+                raise ValueError(
+                    "exactly one of next_attempt_at or retry_after is required for a retry"
+                )
+            if retry_after is not None:
+                if retry_after < timedelta(0):
+                    raise ValueError("retry_after must be >= 0")
+                values["next_attempt_at"] = func.now() + retry_after
+            else:
+                values["next_attempt_at"] = next_attempt_at
 
         if last_error is not None:
             values["last_error"] = last_error
@@ -244,11 +278,11 @@ class EventRepository:
         elif outcome is not None:
             raise ValueError("outcome is only valid when the event is processed")
 
+        conditions = [_EVENTS.c.id == event_id, _EVENTS.c.status == result.from_status]
+        if expected_attempts is not None:
+            conditions.append(_EVENTS.c.attempts == expected_attempts)
         statement = (
-            update(_EVENTS)
-            .where(_EVENTS.c.id == event_id, _EVENTS.c.status == result.from_status)
-            .values(**values)
-            .returning(_EVENTS.c.trace_id)
+            update(_EVENTS).where(*conditions).values(**values).returning(_EVENTS.c.trace_id)
         )
         row = self._session.execute(statement).first()
         if row is None:
@@ -257,6 +291,23 @@ class EventRepository:
             event_id, result.from_status, result.to_status, result.reason, row[0]
         )
         return True
+
+    def start_attempt(self, event_id: uuid.UUID, attempt_no: int) -> int:
+        """Open an ``event_attempts`` row; an unfinished row is evidence of a crash."""
+        statement = (
+            insert(_ATTEMPTS)
+            .values(event_id=event_id, attempt_no=attempt_no, started_at=func.now())
+            .returning(_ATTEMPTS.c.id)
+        )
+        attempt_id: int = self._session.execute(statement).scalar_one()
+        return attempt_id
+
+    def finish_attempt(self, attempt_id: int, *, result: str, error: str | None) -> None:
+        self._session.execute(
+            update(_ATTEMPTS)
+            .where(_ATTEMPTS.c.id == attempt_id)
+            .values(finished_at=func.now(), result=result, error=error)
+        )
 
     # -- internals ---------------------------------------------------------------
 
