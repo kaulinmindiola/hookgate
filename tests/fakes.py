@@ -113,3 +113,13 @@ class RecordingMetrics:
 
     def cache_error(self, op: CacheOp) -> None:
         self.cache_errors[op] += 1
+
+
+class FixedRng:
+    """Picks a fixed fraction of the requested interval (0.0 = lower, 1.0 = upper)."""
+
+    def __init__(self, fraction: float) -> None:
+        self.fraction = fraction
+
+    def uniform(self, a: float, b: float) -> float:
+        return a + (b - a) * self.fraction

@@ -61,3 +61,27 @@ class TransitionRecord:
     reason: str
     trace_id: str | None
     at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptRecord:
+    """One row of ``event_attempts``. ``finished_at`` None means the worker never finished."""
+
+    attempt_no: int
+    started_at: datetime
+    finished_at: datetime | None
+    result: str | None
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PaymentRecord:
+    """One row of the ``payments`` projection."""
+
+    resource_id: str
+    status: str | None
+    amount: int | None
+    currency: str | None
+    last_occurred_at: datetime | None
+    last_event_id: str | None
+    updated_at: datetime
