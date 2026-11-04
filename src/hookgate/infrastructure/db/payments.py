@@ -1,18 +1,21 @@
-"""Payment projection and applied effects (FR-PRO-3, SDD 8 and 11).
+"""Payment projection and applied effects (FR-PRO-3, FR-ORD-1..4, SDD 8, 11 and 13).
 
-``apply()`` writes the projection and the ``applied_effects`` row in the caller's
-transaction. ``applied_effects.event_id`` is a primary key, so a second effect for the
-same event fails structurally instead of silently applying twice.
+All methods run in the caller's transaction. ``lock_resource()`` serializes events of
+the same resource with a row lock (events of other resources are not blocked) and
+returns the ordering key of the last applied event. ``apply()`` writes the snapshot and
+the ``applied_effects`` row; ``applied_effects.event_id`` is a primary key, so a second
+effect for the same event fails structurally instead of silently applying twice.
 """
 
 import uuid
 from typing import cast
 
-from sqlalchemy import Table, func, insert, select
+from sqlalchemy import Table, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from hookgate.application.records import PaymentRecord
+from hookgate.domain.ordering import OrderingKey
 from hookgate.domain.payments import Payment
 from hookgate.infrastructure.db.models import AppliedEffectRow, PaymentRow
 
@@ -24,24 +27,43 @@ class PaymentProjection:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def apply(self, payment: Payment, event_id: uuid.UUID) -> None:
-        """Upsert the projection with the full snapshot and record the effect.
+    def lock_resource(self, resource_id: str) -> OrderingKey | None:
+        """Ensure the row exists, lock it until commit and return its last applied key.
 
-        Last write wins for now; the per-resource ordering rule arrives in phase F6.
+        A row created here has NULL ``last_*`` columns: None means "no event applied
+        yet", so nothing is stale for it (decision P5).
         """
-        values = {
-            "status": payment.status.value,
-            "amount": payment.amount,
-            "currency": payment.currency,
-            "last_occurred_at": payment.last_key.occurred_at,
-            "last_event_id": payment.last_key.event_id,
-        }
-        upsert = pg_insert(_PAYMENTS).values(resource_id=payment.resource_id, **values)
-        upsert = upsert.on_conflict_do_update(
-            index_elements=[_PAYMENTS.c.resource_id],
-            set_={**values, "updated_at": func.now()},
+        self._session.execute(
+            pg_insert(_PAYMENTS)
+            .values(resource_id=resource_id)
+            .on_conflict_do_nothing(index_elements=[_PAYMENTS.c.resource_id])
         )
-        self._session.execute(upsert)
+        row = self._session.execute(
+            select(_PAYMENTS.c.last_occurred_at, _PAYMENTS.c.last_event_id)
+            .where(_PAYMENTS.c.resource_id == resource_id)
+            .with_for_update()
+        ).one()
+        if row.last_occurred_at is None or row.last_event_id is None:
+            return None
+        return OrderingKey(row.last_occurred_at, row.last_event_id)
+
+    def apply(self, payment: Payment, event_id: uuid.UUID) -> None:
+        """Write the full snapshot and record the effect. Call ``lock_resource()`` first."""
+        updated = self._session.execute(
+            update(_PAYMENTS)
+            .where(_PAYMENTS.c.resource_id == payment.resource_id)
+            .values(
+                status=payment.status.value,
+                amount=payment.amount,
+                currency=payment.currency,
+                last_occurred_at=payment.last_key.occurred_at,
+                last_event_id=payment.last_key.event_id,
+                updated_at=func.now(),
+            )
+            .returning(_PAYMENTS.c.resource_id)
+        ).first()
+        if updated is None:
+            raise RuntimeError(f"payment row {payment.resource_id!r} is missing: lock it first")
         self._session.execute(insert(_EFFECTS).values(event_id=event_id))
 
     def get(self, resource_id: str) -> PaymentRecord | None:

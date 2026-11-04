@@ -169,7 +169,9 @@ def test_success_applies_the_effect_and_records_everything(session_factory: Fact
 
     result = make_processor(session_factory)(event_id)
 
-    assert result == ProcessResult(ProcessOutcome.PROCESSED, attempt=1)
+    assert result == ProcessResult(
+        ProcessOutcome.PROCESSED, attempt=1, event_outcome=EventOutcome.APPLIED
+    )
     stored = load(session_factory, event_id)
     assert stored.status is S.PROCESSED
     assert stored.outcome is EventOutcome.APPLIED
@@ -248,7 +250,9 @@ def test_transient_failures_retry_with_backoff_then_succeed(session_factory: Fac
     make_retry_due(session_factory, event_id)
     final = process(event_id)
 
-    assert final == ProcessResult(ProcessOutcome.PROCESSED, attempt=3)
+    assert final == ProcessResult(
+        ProcessOutcome.PROCESSED, attempt=3, event_outcome=EventOutcome.APPLIED
+    )
     stored = load(session_factory, event_id)
     assert (stored.status, stored.attempts, stored.next_attempt_at) == (S.PROCESSED, 3, None)
     assert stored.last_error == "TransientError: gateway timeout"

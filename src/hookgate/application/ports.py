@@ -11,6 +11,7 @@ from uuid import UUID
 
 from hookgate.application.records import NewEvent, StoredEvent
 from hookgate.domain.events import EventIdentity
+from hookgate.domain.ordering import OrderingKey
 from hookgate.domain.outcomes import EventOutcome
 from hookgate.domain.payments import Payment
 from hookgate.domain.states import TransitionResult
@@ -87,6 +88,10 @@ class ProcessingEvents(Protocol):
 
 
 class PaymentEffects(Protocol):
+    def lock_resource(self, resource_id: str) -> OrderingKey | None:
+        """Lock the resource row until commit; return the last applied key (None: none)."""
+        ...
+
     def apply(self, payment: Payment, event_id: UUID) -> None:
         """Write the projection and the ``applied_effects`` row (same transaction)."""
         ...
