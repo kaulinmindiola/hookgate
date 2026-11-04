@@ -17,7 +17,9 @@ from sqlalchemy.orm import Session
 from hookgate.application.records import (
     AttemptRecord,
     DueEvent,
+    EventQuery,
     NewEvent,
+    PageKey,
     StoredEvent,
     TransitionRecord,
 )
@@ -141,11 +143,30 @@ class EventRepository:
         limit: int,
         after: tuple[datetime, uuid.UUID] | None = None,
     ) -> list[StoredEvent]:
-        """Page through events ordered by ``(received_at, id)`` (keyset pagination)."""
-        statement = select(_EVENTS).where(_EVENTS.c.status.in_(list(statuses)))
+        """Page through events of the given statuses ordered by ``(received_at, id)``."""
+        key = None if after is None else PageKey(received_at=after[0], id=after[1])
+        return self.list_events(EventQuery(statuses=tuple(statuses)), limit=limit, after=key)
+
+    def list_events(
+        self, query: EventQuery, *, limit: int, after: PageKey | None = None
+    ) -> list[StoredEvent]:
+        """Filtered keyset page ordered by ``(received_at, id)`` (FR-DLQ-1).
+
+        Keyset, not OFFSET: a page never repeats or skips rows when events arrive
+        between requests, and its cost does not grow with the page number.
+        """
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        statement = select(_EVENTS)
+        if query.statuses:
+            statement = statement.where(_EVENTS.c.status.in_(list(query.statuses)))
+        if query.resource_id is not None:
+            statement = statement.where(_EVENTS.c.resource_id == query.resource_id)
+        if query.event_type is not None:
+            statement = statement.where(_EVENTS.c.event_type == query.event_type)
         if after is not None:
             statement = statement.where(
-                tuple_(_EVENTS.c.received_at, _EVENTS.c.id) > tuple_(after[0], after[1])
+                tuple_(_EVENTS.c.received_at, _EVENTS.c.id) > tuple_(after.received_at, after.id)
             )
         statement = statement.order_by(_EVENTS.c.received_at, _EVENTS.c.id).limit(limit)
         return [_to_stored(row) for row in self._session.execute(statement)]

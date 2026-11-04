@@ -78,7 +78,7 @@ def test_replay_resets_attempts_and_clears_schedule_and_lease() -> None:
 
 
 def test_reason_is_the_trigger_value() -> None:
-    assert transition(S.DEAD, T.REPLAY).reason == "replay"
+    assert transition(S.DEAD, T.REPLAY).reason == "operator_replay"
 
 
 @pytest.mark.parametrize(("status", "trigger"), ILLEGAL_PAIRS)

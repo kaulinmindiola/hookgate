@@ -9,7 +9,15 @@ from datetime import datetime, timedelta
 from typing import Literal, Protocol
 from uuid import UUID
 
-from hookgate.application.records import DueEvent, NewEvent, StoredEvent
+from hookgate.application.records import (
+    AttemptRecord,
+    DueEvent,
+    EventQuery,
+    NewEvent,
+    PageKey,
+    StoredEvent,
+    TransitionRecord,
+)
 from hookgate.domain.events import EventIdentity
 from hookgate.domain.ordering import OrderingKey
 from hookgate.domain.outcomes import EventOutcome
@@ -134,3 +142,32 @@ class SweepEvents(Protocol):
 
 # Opens one transaction: commits when the block exits cleanly, rolls back otherwise.
 SweepScope = Callable[[], AbstractContextManager[SweepEvents]]
+
+
+class AdminEvents(Protocol):
+    """The slice of the event repository that the admin use cases use (FR-DLQ-1..4)."""
+
+    def list_events(
+        self, query: EventQuery, *, limit: int, after: PageKey | None = None
+    ) -> list[StoredEvent]: ...
+
+    def get(self, event_id: UUID) -> StoredEvent | None: ...
+
+    def list_transitions(self, event_id: UUID) -> list[TransitionRecord]: ...
+
+    def list_attempts(self, event_id: UUID) -> list[AttemptRecord]: ...
+
+    def apply_transition(
+        self,
+        event_id: UUID,
+        result: TransitionResult,
+        *,
+        retry_after: timedelta | None = None,
+        last_error: str | None = None,
+        outcome: EventOutcome | None = None,
+        expected_attempts: int | None = None,
+    ) -> bool: ...
+
+
+# Opens one transaction: commits when the block exits cleanly, rolls back otherwise.
+AdminScope = Callable[[], AbstractContextManager[AdminEvents]]

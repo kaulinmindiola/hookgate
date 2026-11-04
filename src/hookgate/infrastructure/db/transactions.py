@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session, sessionmaker
 
 from hookgate.application.ports import (
+    AdminEvents,
+    AdminScope,
     EventStore,
     EventStoreScope,
     ProcessingScope,
@@ -52,6 +54,17 @@ def sweep_scope(factory: sessionmaker[Session]) -> SweepScope:
 
     @contextmanager
     def scope() -> Iterator[SweepEvents]:
+        with session_scope(factory) as session:
+            yield EventRepository(session)
+
+    return scope
+
+
+def admin_scope(factory: sessionmaker[Session]) -> AdminScope:
+    """One database transaction per ``with`` block, exposing the admin queries and replay."""
+
+    @contextmanager
+    def scope() -> Iterator[AdminEvents]:
         with session_scope(factory) as session:
             yield EventRepository(session)
 
