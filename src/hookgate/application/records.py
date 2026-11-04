@@ -93,3 +93,23 @@ class DueEvent:
 
     id: UUID
     trace_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class EventQuery:
+    """Filters of the admin event list (FR-DLQ-1). Empty ``statuses`` means any status."""
+
+    statuses: tuple[EventStatus, ...] = ()
+    resource_id: str | None = None
+    event_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PageKey:
+    """Keyset position ``(received_at, id)``: the page starts after this event."""
+
+    received_at: datetime
+    id: UUID
+
+    def __post_init__(self) -> None:
+        require_aware(self.received_at, "received_at")

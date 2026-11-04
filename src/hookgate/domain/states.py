@@ -28,7 +28,7 @@ class Trigger(StrEnum):
     TRANSIENT_ERROR = "transient_error"
     PERMANENT_ERROR = "permanent_error"
     LEASE_EXPIRED = "lease_expired"
-    REPLAY = "replay"
+    REPLAY = "operator_replay"  # audit reason of an operator replay (SDD 14)
 
 
 class AttemptsAction(StrEnum):
