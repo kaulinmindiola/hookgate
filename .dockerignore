@@ -1,0 +1,16 @@
+# Only what the image needs is sent to the Docker build.
+.git
+.github
+.venv
+.env
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.hypothesis
+.coverage
+htmlcov
+**/__pycache__
+**/*.pyc
+tests
+docs
+scripts

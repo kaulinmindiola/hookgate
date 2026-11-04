@@ -1,6 +1,21 @@
 name: hookgate
 
-# Development infrastructure only. Credentials are local, non-secret development values.
+# `docker compose up --build` starts everything (NFR-5). `make up` starts only the
+# infrastructure (postgres, redis, rabbitmq) for local development and tests.
+# Credentials and secrets below are local, non-secret development values.
+
+x-app: &app
+  build: .
+  image: hookgate:local
+  environment:
+    DATABASE_URL: postgresql+psycopg://hookgate:hookgate@postgres:5432/hookgate?connect_timeout=5
+    REDIS_URL: redis://redis:6379/0
+    BROKER_URL: amqp://hookgate:hookgate@rabbitmq:5672//
+    WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-only-webhook-secret-change-me}
+    ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-only-admin-key-change-me}
+    LEASE_S: ${LEASE_S:-60}
+    SWEEP_INTERVAL_S: ${SWEEP_INTERVAL_S:-15}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -41,6 +56,53 @@ services:
       interval: 10s
       timeout: 10s
       retries: 10
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "hookgate.worker", "worker", "--pool", "threads", "--concurrency", "8", "--loglevel", "INFO"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  beat:
+    <<: *app
+    command: ["celery", "-A", "hookgate.worker", "beat", "--loglevel", "INFO", "--schedule", "/tmp/celerybeat-schedule"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   postgres-data:
