@@ -382,6 +382,8 @@ Inside the processing transaction:
 
 Because every event carries a full snapshot, applying only the latest one gives the same final state as applying all of them in order, so arrival order cannot change the result (VR-2). If events were deltas this would not hold; that is recorded as a design assumption and limitation.
 
+**Implementation notes (phase F6).** A projection row created by step 1 has NULL `last_*` columns; the domain rule treats NULL as "no event applied yet", so the first event of a resource is always applied (P5). The comparison runs in Python with the pure `is_stale` rule, so it never depends on the database collation. Every transaction locks the payment row first and the event row second, a fixed order that rules out lock cycles between workers. A stale event still has its snapshot validated (an invalid one ends `dead`); a valid stale event ends `processed` with outcome `ignored_stale` and writes no `applied_effects` row.
+
 Event types for the demo domain: `payment.created`, `payment.authorized`, `payment.succeeded`, `payment.failed`, `payment.refunded`. The handler maps each to a `payments.status`; an unknown type is a `PermanentError`.
 
 ## 14. Dead-letter and replay design
