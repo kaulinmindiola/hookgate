@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session, sessionmaker
-from tests.fakes import FixedClock
+from tests.fakes import FixedClock, RecordingPublisher
 
 from hookgate.api.main import create_app
 from hookgate.config import Settings
@@ -35,7 +35,10 @@ def make_client(database_url: str, engine: Engine, cache: RedisDedupeCache) -> T
         webhook_secret=SecretStr(SECRET),
         admin_api_key=SecretStr("unused-admin-key"),
     )
-    return TestClient(create_app(settings, engine=engine, clock=FixedClock(NOW), cache=cache))
+    app = create_app(
+        settings, engine=engine, clock=FixedClock(NOW), cache=cache, publisher=RecordingPublisher()
+    )
+    return TestClient(app)
 
 
 @pytest.fixture

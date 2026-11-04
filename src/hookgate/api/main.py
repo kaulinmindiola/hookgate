@@ -2,8 +2,8 @@
 
 Run locally with: ``uv run uvicorn hookgate.api.main:create_app --factory``.
 The factory takes optional collaborators so tests can inject fakes or a test database.
-By default it connects to PostgreSQL and Redis from the settings; the Prometheus
-metrics adapter arrives in phase F9 (until then cache errors are logged only).
+By default it connects to PostgreSQL, Redis and the broker from the settings; the
+Prometheus metrics adapter arrives in phase F9 (until then cache errors are logged only).
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -25,11 +25,12 @@ from hookgate.application.ports import (
 )
 from hookgate.config import Settings, get_settings
 from hookgate.infrastructure.cache import RedisDedupeCache
+from hookgate.infrastructure.celery_app import create_celery
 from hookgate.infrastructure.clock import SystemClock
 from hookgate.infrastructure.db.engine import create_db_engine, create_session_factory
 from hookgate.infrastructure.db.transactions import event_store_scope
 from hookgate.infrastructure.logging import configure_logging
-from hookgate.infrastructure.queue import NullPublisher
+from hookgate.infrastructure.queue import CeleryPublisher
 
 
 async def _trace_id_middleware(
@@ -83,7 +84,10 @@ def create_app(
         tolerance_s=settings.timestamp_tolerance_s,
         clock=clock or SystemClock(),
         events=events,
-        publisher=publisher or NullPublisher(),
+        publisher=publisher
+        or CeleryPublisher(
+            create_celery(settings.broker_url, sweep_interval_s=settings.sweep_interval_s)
+        ),
         cache=cache,
         metrics=metrics,
     )
