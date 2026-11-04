@@ -85,3 +85,11 @@ class PaymentRecord:
     last_occurred_at: datetime | None
     last_event_id: str | None
     updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DueEvent:
+    """An event the sweeper must hand to the queue again (FR-PRO-7)."""
+
+    id: UUID
+    trace_id: str

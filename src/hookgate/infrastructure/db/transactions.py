@@ -11,6 +11,8 @@ from hookgate.application.ports import (
     EventStoreScope,
     ProcessingScope,
     ProcessingUnit,
+    SweepEvents,
+    SweepScope,
 )
 from hookgate.infrastructure.db.engine import session_scope
 from hookgate.infrastructure.db.payments import PaymentProjection
@@ -41,5 +43,16 @@ def processing_scope(factory: sessionmaker[Session]) -> ProcessingScope:
     def scope() -> Iterator[ProcessingUnit]:
         with session_scope(factory) as session:
             yield SqlProcessingUnit(EventRepository(session), PaymentProjection(session))
+
+    return scope
+
+
+def sweep_scope(factory: sessionmaker[Session]) -> SweepScope:
+    """One database transaction per ``with`` block, exposing the sweeper's queries."""
+
+    @contextmanager
+    def scope() -> Iterator[SweepEvents]:
+        with session_scope(factory) as session:
+            yield EventRepository(session)
 
     return scope
