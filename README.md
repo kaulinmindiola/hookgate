@@ -78,6 +78,7 @@ curl -X POST -H "$KEY" "http://127.0.0.1:8000/admin/events/<id>/replay"    # dea
 - `GET /admin/events`: filters `status` (repeatable), `resource_id`, `event_type`; `limit` 1 to 200 (default 50). Items are ordered by `(received_at, id)`; `next_cursor` is `null` on the last page, and pages never repeat or skip an event. A cursor not produced by the API is `400 invalid_cursor`.
 - `GET /admin/events/{id}`: the stored raw body (exact bytes in `raw_body_base64`, readable text in `raw_body`), headers, state, last error, transitions and attempts. `404 event_not_found` if unknown.
 - `POST /admin/events/{id}/replay`: only for `dead` events; resets `attempts`, clears the retry time and the lease, keeps the history, writes an `operator_replay` audit row and enqueues the event. `202 {"status": "received", "enqueued": true}`; `enqueued` is `false` if the broker was down (the sweeper enqueues it later). Not dead: `409 event_not_dead`. Concurrent replays enqueue the event once. A poison payload replayed without a fix ends `dead` again, with the full history.
+- `GET /admin/payments/{resource_id}`: the current state of one payment in the projection (status, amount, currency, `last_event_id`, `last_occurred_at`), so an external checker can confirm that the latest event won. `404 payment_not_found` if the resource never had an applied event.
 
 ## Health, metrics and tracing
 
@@ -85,6 +86,20 @@ curl -X POST -H "$KEY" "http://127.0.0.1:8000/admin/events/<id>/replay"    # dea
 - `GET /health`: readiness, `{"status": "ok" | "degraded" | "down", "checks": {"db", "redis", "broker"}}`. Redis or the broker down is `degraded` with 200 (ingestion still works: Redis is only a fast path and the sweeper recovers unpublished events); the database down is `down` with 503.
 - `GET /metrics` on the API and `http://127.0.0.1:9100/metrics` on the worker (`WORKER_METRICS_PORT`), in Prometheus text format. Each process counts what it changes: the API counts deliveries (`hookgate_events_received_total{outcome}`, `hookgate_duplicates_total{layer}`, `hookgate_cache_errors_total{op}`); the worker counts processing (`hookgate_events_processed_total{outcome}`, `hookgate_events_retried_total`, `hookgate_events_dead_total{reason}`, `hookgate_processing_seconds`). The API also serves `hookgate_events_by_status{status}`, computed with one database query per scrape.
 - Every log line is JSON. The `trace_id` of a delivery (the caller's `X-Trace-Id` or a generated one) is stored on the event and sent to the worker as a message header, so `docker compose logs api worker | grep <trace_id>` shows the whole path of one event.
+
+## Simulating a provider
+
+`simulator/` plays the payment provider. It builds a deterministic plan from a scenario and a seed, signs every delivery when it sends it, and then checks the result with an expected-state oracle through the admin API: every valid event stored once and answered `accepted` exactly once, rejected deliveries never stored, poison events `dead` and listed, and every payment equal to its latest event. It does not import `hookgate`: it treats the service as a black box.
+
+```bash
+make simulate                                  # chaos, seed 7, against http://127.0.0.1:8000
+make simulate SCENARIO=out_of_order SEED=3
+uv run python -m simulator list                # happy, duplicates, delayed, out_of_order, burst,
+                                               # bad_signature, expired, poison, chaos
+make demo                                      # the same inside the compose network (demo profile)
+```
+
+Each run gets a random run id that prefixes its event ids, so runs never collide; the output ends with the `verify` command that re-checks that run later. Exit code 0 means every check passed. `HOOKGATE_URL`, `WEBHOOK_SECRET` and `ADMIN_API_KEY` (or `--url`, `--secret`, `--api-key`) point it at another deployment.
 
 ## Decisions
 
