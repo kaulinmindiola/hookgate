@@ -41,6 +41,7 @@ async def _invalid_payload(_: Request, exc: Exception) -> JSONResponse:
 
 async def _payload_too_large(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, PayloadTooLarge)
+    request.app.state.ingestion_metrics.received("rejected")
     _log.warning(
         "webhook_rejected",
         reason="payload_too_large",
