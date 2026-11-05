@@ -22,6 +22,8 @@ WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
 COPY alembic.ini ./
 COPY migrations ./migrations
+# The provider simulator (demo profile of the compose file); it does not import hookgate.
+COPY simulator ./simulator
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

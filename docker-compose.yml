@@ -107,5 +107,22 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # Demo only: `docker compose --profile demo run --rm simulator` (chaos, seed 7), or pass
+  # your own arguments, e.g. `... run --rm simulator run --scenario poison --seed 3`.
+  simulator:
+    image: hookgate:local
+    profiles: ["demo"]
+    entrypoint: ["python", "-m", "simulator"]
+    command: ["run", "--scenario", "chaos", "--seed", "7"]
+    environment:
+      HOOKGATE_URL: http://api:8000
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-only-webhook-secret-change-me}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-only-admin-key-change-me}
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_started
+
 volumes:
   postgres-data:
