@@ -79,6 +79,13 @@ curl -X POST -H "$KEY" "http://127.0.0.1:8000/admin/events/<id>/replay"    # dea
 - `GET /admin/events/{id}`: the stored raw body (exact bytes in `raw_body_base64`, readable text in `raw_body`), headers, state, last error, transitions and attempts. `404 event_not_found` if unknown.
 - `POST /admin/events/{id}/replay`: only for `dead` events; resets `attempts`, clears the retry time and the lease, keeps the history, writes an `operator_replay` audit row and enqueues the event. `202 {"status": "received", "enqueued": true}`; `enqueued` is `false` if the broker was down (the sweeper enqueues it later). Not dead: `409 event_not_dead`. Concurrent replays enqueue the event once. A poison payload replayed without a fix ends `dead` again, with the full history.
 
+## Health, metrics and tracing
+
+- `GET /health/live`: 200 while the process can answer (restart probe; used by the compose healthcheck).
+- `GET /health`: readiness, `{"status": "ok" | "degraded" | "down", "checks": {"db", "redis", "broker"}}`. Redis or the broker down is `degraded` with 200 (ingestion still works: Redis is only a fast path and the sweeper recovers unpublished events); the database down is `down` with 503.
+- `GET /metrics` on the API and `http://127.0.0.1:9100/metrics` on the worker (`WORKER_METRICS_PORT`), in Prometheus text format. Each process counts what it changes: the API counts deliveries (`hookgate_events_received_total{outcome}`, `hookgate_duplicates_total{layer}`, `hookgate_cache_errors_total{op}`); the worker counts processing (`hookgate_events_processed_total{outcome}`, `hookgate_events_retried_total`, `hookgate_events_dead_total{reason}`, `hookgate_processing_seconds`). The API also serves `hookgate_events_by_status{status}`, computed with one database query per scrape.
+- Every log line is JSON. The `trace_id` of a delivery (the caller's `X-Trace-Id` or a generated one) is stored on the event and sent to the worker as a message header, so `docker compose logs api worker | grep <trace_id>` shows the whole path of one event.
+
 ## Decisions
 
 - [ADR-001: PostgreSQL is the source of truth](docs/adr/001-postgresql-source-of-truth.md)
