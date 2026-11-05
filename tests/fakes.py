@@ -7,9 +7,10 @@ from datetime import datetime
 from threading import Lock
 from uuid import UUID, uuid4
 
-from hookgate.application.ports import CacheOp, EventStore
+from hookgate.application.ports import CacheOp, DuplicateLayer, EventStore, ReceivedOutcome
 from hookgate.application.records import NewEvent
 from hookgate.domain.events import EventIdentity
+from hookgate.domain.outcomes import EventOutcome
 
 
 class FixedClock:
@@ -108,11 +109,45 @@ class FaultyCache(InMemoryCache):
 
 
 class RecordingMetrics:
+    """Records every metric call; satisfies ``IngestionMetrics`` and ``ProcessingMetrics``."""
+
     def __init__(self) -> None:
         self.cache_errors: Counter[CacheOp] = Counter()
+        self.received_outcomes: Counter[ReceivedOutcome] = Counter()
+        self.duplicates: Counter[DuplicateLayer] = Counter()
+        self.processed_outcomes: Counter[EventOutcome] = Counter()
+        self.retries = 0
+        self.dead_reasons: Counter[str] = Counter()
+        self.durations: list[float] = []
+        self._lock = Lock()  # the worker calls it from several threads
+
+    def received(self, outcome: ReceivedOutcome) -> None:
+        with self._lock:
+            self.received_outcomes[outcome] += 1
+
+    def duplicate(self, layer: DuplicateLayer) -> None:
+        with self._lock:
+            self.duplicates[layer] += 1
 
     def cache_error(self, op: CacheOp) -> None:
-        self.cache_errors[op] += 1
+        with self._lock:
+            self.cache_errors[op] += 1
+
+    def processed(self, outcome: EventOutcome) -> None:
+        with self._lock:
+            self.processed_outcomes[outcome] += 1
+
+    def retried(self) -> None:
+        with self._lock:
+            self.retries += 1
+
+    def dead(self, reason: str) -> None:
+        with self._lock:
+            self.dead_reasons[reason] += 1
+
+    def processing_seconds(self, seconds: float) -> None:
+        with self._lock:
+            self.durations.append(seconds)
 
 
 class FixedRng:

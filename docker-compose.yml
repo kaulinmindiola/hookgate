@@ -15,6 +15,7 @@ x-app: &app
     ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-only-admin-key-change-me}
     LEASE_S: ${LEASE_S:-60}
     SWEEP_INTERVAL_S: ${SWEEP_INTERVAL_S:-15}
+    WORKER_METRICS_PORT: 9100
 
 services:
   postgres:
@@ -74,7 +75,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"
       interval: 5s
       timeout: 3s
       retries: 10
@@ -89,6 +90,8 @@ services:
   worker:
     <<: *app
     command: ["celery", "-A", "hookgate.worker", "worker", "--pool", "threads", "--concurrency", "8", "--loglevel", "INFO"]
+    ports:
+      - "127.0.0.1:9100:9100"  # worker metrics (Prometheus text format)
     depends_on:
       migrate:
         condition: service_completed_successfully

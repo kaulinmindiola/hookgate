@@ -442,6 +442,8 @@ The API serves `/metrics`; the worker exposes its own metrics port. Counters tha
   'checks': { 'db': 'ok', 'broker': 'ok', 'redis': 'down' } }
 ```
 
+**Implementation notes (phase F9).** Liveness is `GET /health/live` and readiness `GET /health`. The probes run in parallel, so readiness takes as long as the slowest timeout; only the database is critical (`down`, 503); a Redis or broker outage is `degraded` (200), because ingestion keeps working. Each process has its own registry: the API serves `/metrics`, the worker starts its metrics server on `WORKER_METRICS_PORT` (default 9100) from Celery's `worker_ready` signal, so beat, which loads the same module, opens no port. Every labelled series starts at 0. `hookgate_events_retried_total` also counts expired leases that go back to `failed`, and `hookgate_events_dead_total{reason}` uses the trigger (`permanent_error`, `transient_error` after the last attempt, `lease_expired`). `hookgate_processing_seconds` measures claimed work only (handler plus effect or failure transaction). `hookgate_events_by_status` is computed at scrape time with one `GROUP BY status` query; if the query fails the gauge is left out of that scrape. The worker task binds the `trace_id` message header to the structlog context, and the delayed retry message carries the same header.
+
 ## 16. Project structure, run and CI
 
 ```

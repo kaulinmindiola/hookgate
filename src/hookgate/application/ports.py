@@ -68,10 +68,32 @@ class DedupeCache(Protocol):
 CacheOp = Literal["get", "set"]
 
 
+ReceivedOutcome = Literal["accepted", "duplicate", "rejected"]
+DuplicateLayer = Literal["redis", "postgres"]
+
+
 class IngestionMetrics(Protocol):
-    """Counters recorded by ingestion. The Prometheus adapter arrives in phase F9."""
+    """Counters recorded by ingestion (SDD 15.2), in the API process."""
+
+    def received(self, outcome: ReceivedOutcome) -> None: ...
+
+    def duplicate(self, layer: DuplicateLayer) -> None: ...
 
     def cache_error(self, op: CacheOp) -> None: ...
+
+
+class ProcessingMetrics(Protocol):
+    """Counters and timings recorded where events change state (SDD 15.2), in the worker."""
+
+    def processed(self, outcome: EventOutcome) -> None: ...
+
+    def retried(self) -> None: ...
+
+    def dead(self, reason: str) -> None:
+        """``reason`` is the trigger that killed the event (``Trigger`` value)."""
+        ...
+
+    def processing_seconds(self, seconds: float) -> None: ...
 
 
 class ProcessingEvents(Protocol):

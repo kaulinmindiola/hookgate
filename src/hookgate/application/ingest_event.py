@@ -17,10 +17,12 @@ import structlog
 from pydantic import AwareDatetime, BaseModel, ConfigDict, StringConstraints, ValidationError
 from structlog.typing import FilteringBoundLogger
 
+from hookgate.application.metrics import NULL_METRICS
 from hookgate.application.ports import (
     CacheOp,
     Clock,
     DedupeCache,
+    DuplicateLayer,
     EventPublisher,
     EventStoreScope,
     IngestionMetrics,
@@ -123,7 +125,7 @@ class IngestEvent:
         self._events = events
         self._publisher = publisher
         self._cache = cache
-        self._metrics = metrics
+        self._metrics = metrics or NULL_METRICS
         self._provider = provider
 
     def __call__(self, command: IngestCommand) -> IngestResult:
@@ -139,12 +141,14 @@ class IngestEvent:
                 tolerance_s=self._tolerance_s,
             )
         except SignatureError as exc:
+            self._metrics.received("rejected")
             log.warning("webhook_rejected", reason=exc.reason.value)
             raise
 
         try:
             envelope = parse_envelope(command.raw_body)
         except InvalidPayload as exc:
+            self._metrics.received("rejected")
             log.warning("webhook_rejected", reason="invalid_payload", problems=list(exc.problems))
             raise
 
@@ -165,6 +169,7 @@ class IngestEvent:
             # Known event: skip the database. A changed body is not detected on this
             # path (FR-IDE-6 is checked only when PostgreSQL detects the duplicate).
             log.info("webhook_duplicate", layer="redis")
+            self._count_duplicate("redis")
             return IngestResult(IngestStatus.DUPLICATE, envelope.id, None)
 
         original_body: bytes | None = None
@@ -178,10 +183,12 @@ class IngestEvent:
             if original_body is not None and original_body != command.raw_body:
                 log.warning("payload_mismatch", layer="postgres")
             log.info("webhook_duplicate", layer="postgres")
+            self._count_duplicate("postgres")
             self._write_marker(new.identity, log)  # the row exists: safe to re-mark
             return IngestResult(IngestStatus.DUPLICATE, envelope.id, None)
 
         log.info("webhook_accepted", status="received")
+        self._metrics.received("accepted")
         self._write_marker(new.identity, log)
         try:
             self._publisher.publish(stored_id, trace_id=command.trace_id)
@@ -208,7 +215,10 @@ class IngestEvent:
             # Best effort: a missing marker only costs one database round trip later.
             self._cache_failed("set", exc, log)
 
+    def _count_duplicate(self, layer: DuplicateLayer) -> None:
+        self._metrics.received("duplicate")
+        self._metrics.duplicate(layer)
+
     def _cache_failed(self, op: CacheOp, exc: Exception, log: FilteringBoundLogger) -> None:
-        if self._metrics is not None:
-            self._metrics.cache_error(op)
+        self._metrics.cache_error(op)
         log.warning("cache_error", op=op, error=type(exc).__name__)

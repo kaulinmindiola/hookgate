@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from hookgate.application.health import CheckStatus, HealthStatus
 from hookgate.application.ingest_event import IngestStatus
 from hookgate.application.records import AttemptRecord, StoredEvent, TransitionRecord
 from hookgate.domain.outcomes import EventOutcome
@@ -23,6 +24,11 @@ class ErrorBody(BaseModel):
 
 class HealthBody(BaseModel):
     status: str
+
+
+class ReadinessBody(BaseModel):
+    status: HealthStatus
+    checks: dict[str, CheckStatus]
 
 
 # -- admin (FR-DLQ-1..3) -----------------------------------------------------------

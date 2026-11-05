@@ -43,5 +43,9 @@ class RedisDedupeCache:
     def remember(self, identity: EventIdentity) -> None:
         self._client.set(dedupe_key(identity), b"1", ex=self._ttl_s)
 
+    def ping(self) -> None:
+        """Raise unless Redis answers (readiness probe)."""
+        self._client.ping()
+
     def close(self) -> None:
         self._client.close()

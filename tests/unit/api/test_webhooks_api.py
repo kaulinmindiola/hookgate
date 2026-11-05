@@ -273,8 +273,8 @@ def test_logs_never_contain_the_body_or_the_secret(harness: Harness) -> None:
     assert SECRET not in text
 
 
-def test_health_is_200(harness: Harness) -> None:
-    response = harness.client.get("/health")
+def test_liveness_is_200(harness: Harness) -> None:
+    response = harness.client.get("/health/live")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}

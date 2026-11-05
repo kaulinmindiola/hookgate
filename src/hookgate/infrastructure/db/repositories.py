@@ -171,6 +171,11 @@ class EventRepository:
         statement = statement.order_by(_EVENTS.c.received_at, _EVENTS.c.id).limit(limit)
         return [_to_stored(row) for row in self._session.execute(statement)]
 
+    def count_by_status(self) -> dict[EventStatus, int]:
+        """Number of stored events per status (the `events_by_status` gauge)."""
+        statement = select(_EVENTS.c.status, func.count()).group_by(_EVENTS.c.status)
+        return {EventStatus(row[0]): int(row[1]) for row in self._session.execute(statement)}
+
     def list_transitions(self, event_id: uuid.UUID) -> list[TransitionRecord]:
         statement = (
             select(_TRANSITIONS)

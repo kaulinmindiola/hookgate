@@ -20,7 +20,8 @@ from datetime import timedelta
 
 import structlog
 
-from hookgate.application.ports import EventPublisher, SweepScope
+from hookgate.application.metrics import NULL_METRICS
+from hookgate.application.ports import EventPublisher, ProcessingMetrics, SweepScope
 from hookgate.application.records import DueEvent
 from hookgate.domain.retry import RetryPolicy, SupportsUniform, delay
 from hookgate.domain.states import ColumnAction, EventStatus, Trigger, transition
@@ -50,6 +51,7 @@ class SweepEvents:
         rng: SupportsUniform,
         batch_size: int = DEFAULT_BATCH_SIZE,
         received_grace_s: int = DEFAULT_RECEIVED_GRACE_S,
+        metrics: ProcessingMetrics | None = None,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
@@ -61,6 +63,7 @@ class SweepEvents:
         self._rng = rng
         self._batch_size = batch_size
         self._received_grace_s = received_grace_s
+        self._metrics = metrics or NULL_METRICS
 
     def __call__(self) -> SweepReport:
         to_failed = to_dead = 0
@@ -89,8 +92,10 @@ class SweepEvents:
                 )
                 if decision.to_status is EventStatus.DEAD:
                     to_dead += 1
+                    self._metrics.dead(Trigger.LEASE_EXPIRED.value)
                 else:
                     to_failed += 1
+                    self._metrics.retried()
                 _log.warning(
                     "lease_expired",
                     trace_id=stored.trace_id,

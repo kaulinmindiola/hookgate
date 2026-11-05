@@ -18,6 +18,7 @@ tests drive it directly; the Celery task in F7 only delegates here.
 """
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -27,7 +28,8 @@ from uuid import UUID
 import structlog
 from structlog.typing import FilteringBoundLogger
 
-from hookgate.application.ports import ProcessingScope
+from hookgate.application.metrics import NULL_METRICS
+from hookgate.application.ports import ProcessingMetrics, ProcessingScope
 from hookgate.application.records import StoredEvent
 from hookgate.domain.errors import PermanentError
 from hookgate.domain.events import Event, EventIdentity
@@ -99,6 +101,7 @@ class ProcessEvent:
         policy: RetryPolicy,
         rng: SupportsUniform,
         handler: EffectHandler = project_event,
+        metrics: ProcessingMetrics | None = None,
     ) -> None:
         if lease_s < 1:
             raise ValueError("lease_s must be >= 1")
@@ -107,6 +110,7 @@ class ProcessEvent:
         self._policy = policy
         self._rng = rng
         self._handler = handler
+        self._metrics = metrics or NULL_METRICS
 
     def __call__(self, event_id: UUID) -> ProcessResult:
         with self._units() as unit:
@@ -124,6 +128,16 @@ class ProcessEvent:
             resource_id=claimed.resource_id,
             attempt=claimed.attempts,
         )
+        started = time.perf_counter()
+        try:
+            return self._work(claimed, attempt_id, log)
+        finally:
+            # Claimed work only: handler plus effect or failure transaction.
+            self._metrics.processing_seconds(time.perf_counter() - started)
+
+    def _work(
+        self, claimed: StoredEvent, attempt_id: int, log: FilteringBoundLogger
+    ) -> ProcessResult:
         try:
             payment = self._handler(to_domain_event(claimed))
             success = transition(
@@ -156,6 +170,7 @@ class ProcessEvent:
             return self._record_failure(claimed, attempt_id, exc, log)
 
         log.info("event_processed", status=EventStatus.PROCESSED.value, outcome=outcome.value)
+        self._metrics.processed(outcome)
         return ProcessResult(ProcessOutcome.PROCESSED, claimed.attempts, event_outcome=outcome)
 
     def _record_failure(
@@ -192,7 +207,9 @@ class ProcessEvent:
 
         if decision.to_status is EventStatus.DEAD:
             log.warning("event_dead", status="dead", reason=trigger.value, error=type(exc).__name__)
+            self._metrics.dead(trigger.value)
             return ProcessResult(ProcessOutcome.DEAD, claimed.attempts, error)
+        self._metrics.retried()
         log.warning(
             "event_retry_scheduled",
             status="failed",
