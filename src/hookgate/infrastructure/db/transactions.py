@@ -1,6 +1,6 @@
 """Transaction scopes that hand repositories to the use cases."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -16,6 +16,7 @@ from hookgate.application.ports import (
     SweepEvents,
     SweepScope,
 )
+from hookgate.domain.states import EventStatus
 from hookgate.infrastructure.db.engine import session_scope
 from hookgate.infrastructure.db.payments import PaymentProjection
 from hookgate.infrastructure.db.repositories import EventRepository
@@ -69,3 +70,13 @@ def admin_scope(factory: sessionmaker[Session]) -> AdminScope:
             yield EventRepository(session)
 
     return scope
+
+
+def status_counts(factory: sessionmaker[Session]) -> Callable[[], dict[EventStatus, int]]:
+    """A short read transaction per call, counting events by status (metrics gauge)."""
+
+    def counts() -> dict[EventStatus, int]:
+        with session_scope(factory) as session:
+            return EventRepository(session).count_by_status()
+
+    return counts

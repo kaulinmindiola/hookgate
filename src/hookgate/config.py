@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     retry_cap_s: float = Field(default=300.0, gt=0)
     redis_socket_timeout_s: float = Field(default=0.05, gt=0)
     sweep_interval_s: int = Field(default=15, gt=0)
+    worker_metrics_port: int = Field(default=9100, ge=1, le=65535)
 
     @field_validator("database_url", "redis_url", "broker_url", mode="after")
     @classmethod
