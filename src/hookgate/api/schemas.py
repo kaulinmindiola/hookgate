@@ -8,7 +8,12 @@ from pydantic import BaseModel
 
 from hookgate.application.health import CheckStatus, HealthStatus
 from hookgate.application.ingest_event import IngestStatus
-from hookgate.application.records import AttemptRecord, StoredEvent, TransitionRecord
+from hookgate.application.records import (
+    AttemptRecord,
+    PaymentRecord,
+    StoredEvent,
+    TransitionRecord,
+)
 from hookgate.domain.outcomes import EventOutcome
 from hookgate.domain.states import EventStatus
 
@@ -138,6 +143,28 @@ class EventDetailBody(EventSummary):
             locked_until=event.locked_until,
             transitions=[TransitionBody.from_record(t) for t in transitions],
             attempts_history=[AttemptBody.from_record(a) for a in attempts],
+        )
+
+
+class PaymentBody(BaseModel):
+    resource_id: str
+    status: str | None
+    amount: int | None
+    currency: str | None
+    last_event_id: str | None
+    last_occurred_at: datetime | None
+    updated_at: datetime
+
+    @classmethod
+    def from_record(cls, record: PaymentRecord) -> "PaymentBody":
+        return cls(
+            resource_id=record.resource_id,
+            status=record.status,
+            amount=record.amount,
+            currency=record.currency,
+            last_event_id=record.last_event_id,
+            last_occurred_at=record.last_occurred_at,
+            updated_at=record.updated_at,
         )
 
 

@@ -15,6 +15,7 @@ from hookgate.application.records import (
     EventQuery,
     NewEvent,
     PageKey,
+    PaymentRecord,
     StoredEvent,
     TransitionRecord,
 )
@@ -193,3 +194,13 @@ class AdminEvents(Protocol):
 
 # Opens one transaction: commits when the block exits cleanly, rolls back otherwise.
 AdminScope = Callable[[], AbstractContextManager[AdminEvents]]
+
+
+class PaymentReads(Protocol):
+    """Read access to the payments projection (admin API, used by the simulator's oracle)."""
+
+    def get(self, resource_id: str) -> PaymentRecord | None: ...
+
+
+# Opens one transaction: commits when the block exits cleanly, rolls back otherwise.
+PaymentReadScope = Callable[[], AbstractContextManager[PaymentReads]]

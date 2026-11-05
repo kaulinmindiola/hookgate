@@ -1,4 +1,4 @@
-"""Admin API: list, inspect and replay events (FR-DLQ-1..4, FR-SEC-1, SDD 14).
+"""Admin API: list, inspect and replay events, read payments (FR-DLQ-1..4, FR-SEC-1, SDD 14).
 
 Every route requires ``X-API-Key`` (router-level dependency). Plain ``def`` endpoints:
 FastAPI runs them in a threadpool, so the synchronous database work does not block
@@ -8,12 +8,13 @@ the event loop (ADR-005).
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Path, Query, status
 from fastapi.responses import JSONResponse
 
 from hookgate.api.cursor import decode_cursor, encode_cursor
 from hookgate.api.deps import (
     get_inspect_events,
+    get_inspect_payment,
     get_replay_event,
     get_trace_id,
     require_admin_key,
@@ -23,9 +24,11 @@ from hookgate.api.schemas import (
     EventDetailBody,
     EventPageBody,
     EventSummary,
+    PaymentBody,
     ReplayAck,
 )
 from hookgate.application.inspect_events import MAX_PAGE_SIZE, InspectEvents
+from hookgate.application.inspect_payment import InspectPayment
 from hookgate.application.records import EventQuery
 from hookgate.application.replay_event import ReplayEvent, ReplayOutcome
 from hookgate.domain.states import EventStatus
@@ -115,3 +118,19 @@ def replay_event(
         return _error(409, "event_not_dead", [f"status: {result.status.value}"])
     assert result.status is not None
     return ReplayAck(status=result.status, enqueued=result.enqueued)
+
+
+@router.get(
+    "/payments/{resource_id}",
+    response_model=PaymentBody,
+    responses={404: {"model": ErrorBody, "description": "No payment for this resource"}},
+)
+def get_payment(
+    resource_id: Annotated[str, Path(max_length=200)],
+    inspect: Annotated[InspectPayment, Depends(get_inspect_payment)],
+) -> PaymentBody | JSONResponse:
+    """Current state of one payment in the projection (the result of latest-wins)."""
+    record = inspect(resource_id)
+    if record is None:
+        return _error(404, "payment_not_found")
+    return PaymentBody.from_record(record)

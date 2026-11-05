@@ -21,6 +21,7 @@ from hookgate.api.routers import metrics as metrics_routes
 from hookgate.application.health import Readiness
 from hookgate.application.ingest_event import IngestEvent
 from hookgate.application.inspect_events import InspectEvents
+from hookgate.application.inspect_payment import InspectPayment
 from hookgate.application.ports import (
     AdminScope,
     Clock,
@@ -28,6 +29,7 @@ from hookgate.application.ports import (
     EventPublisher,
     EventStoreScope,
     IngestionMetrics,
+    PaymentReadScope,
 )
 from hookgate.application.replay_event import ReplayEvent
 from hookgate.config import Settings, get_settings
@@ -38,6 +40,7 @@ from hookgate.infrastructure.db.engine import create_db_engine, create_session_f
 from hookgate.infrastructure.db.transactions import (
     admin_scope,
     event_store_scope,
+    payment_read_scope,
     status_counts,
 )
 from hookgate.infrastructure.health import broker_check, database_check, redis_check
@@ -66,6 +69,7 @@ def create_app(
     engine: Engine | None = None,
     events: EventStoreScope | None = None,
     admin_events: AdminScope | None = None,
+    payment_reads: PaymentReadScope | None = None,
     clock: Clock | None = None,
     publisher: EventPublisher | None = None,
     cache: DedupeCache | None = None,
@@ -78,13 +82,14 @@ def create_app(
     configure_logging()
 
     owned_engine: Engine | None = None
-    needs_database = None in (events, admin_events, event_counts, readiness)
+    needs_database = None in (events, admin_events, payment_reads, event_counts, readiness)
     if needs_database and engine is None:
         engine = owned_engine = create_db_engine(settings.database_url)
     if engine is not None:
         factory = create_session_factory(engine)
         events = events or event_store_scope(factory)
         admin_events = admin_events or admin_scope(factory)
+        payment_reads = payment_reads or payment_read_scope(factory)
         event_counts = event_counts or status_counts(factory)
 
     owned_caches: list[RedisDedupeCache] = []
@@ -132,6 +137,7 @@ def create_app(
     # Injected by the caller or built from the engine above.
     assert events is not None
     assert admin_events is not None
+    assert payment_reads is not None
 
     app = FastAPI(title="Hookgate", version="0.1.0", lifespan=lifespan)
     app.state.admin_api_key = settings.admin_api_key.get_secret_value().encode("utf-8")
@@ -149,6 +155,7 @@ def create_app(
     )
     app.state.inspect_events = InspectEvents(units=admin_events)
     app.state.replay_event = ReplayEvent(units=admin_events, publisher=publisher)
+    app.state.inspect_payment = InspectPayment(units=payment_reads)
     app.middleware("http")(_trace_id_middleware)
     register_error_handlers(app)
     app.include_router(health.router)

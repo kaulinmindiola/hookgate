@@ -1,4 +1,7 @@
-.PHONY: install up down stack logs migrate run worker format lint types test test-integration chaos check
+.PHONY: install up down stack logs migrate run worker simulate demo format lint types test test-integration chaos check
+
+SCENARIO ?= chaos
+SEED ?= 7
 
 install:
 	uv sync
@@ -23,6 +26,12 @@ run:
 
 worker:
 	uv run celery -A hookgate.worker worker --pool threads --concurrency 4 --loglevel INFO
+
+simulate:
+	uv run python -m simulator run --scenario $(SCENARIO) --seed $(SEED)
+
+demo:
+	docker compose --profile demo run --rm simulator run --scenario $(SCENARIO) --seed $(SEED)
 
 format:
 	uv run ruff format .

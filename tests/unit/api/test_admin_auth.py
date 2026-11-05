@@ -95,6 +95,7 @@ ROUTES = [
     ("GET", "/admin/events"),
     ("GET", f"/admin/events/{uuid4()}"),
     ("POST", f"/admin/events/{uuid4()}/replay"),
+    ("GET", "/admin/payments/pay_1"),
 ]
 
 

@@ -11,6 +11,8 @@ from hookgate.application.ports import (
     AdminScope,
     EventStore,
     EventStoreScope,
+    PaymentReads,
+    PaymentReadScope,
     ProcessingScope,
     ProcessingUnit,
     SweepEvents,
@@ -68,6 +70,17 @@ def admin_scope(factory: sessionmaker[Session]) -> AdminScope:
     def scope() -> Iterator[AdminEvents]:
         with session_scope(factory) as session:
             yield EventRepository(session)
+
+    return scope
+
+
+def payment_read_scope(factory: sessionmaker[Session]) -> PaymentReadScope:
+    """One read transaction per ``with`` block, exposing the payments projection."""
+
+    @contextmanager
+    def scope() -> Iterator[PaymentReads]:
+        with session_scope(factory) as session:
+            yield PaymentProjection(session)
 
     return scope
 

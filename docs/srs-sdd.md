@@ -395,6 +395,7 @@ Event types for the demo domain: `payment.created`, `payment.authorized`, `payme
 | `GET /admin/events` | API key | Filters: `status`, `resource_id`, `event_type`; cursor pagination on `(received_at, id)`. |
 | `GET /admin/events/{id}` | API key | Event detail with raw payload, transitions and attempts. |
 | `POST /admin/events/{id}/replay` | API key | In one transaction: CAS `dead → received`, reset attempts, set next\_attempt\_at and locked\_until to NULL, audit row with reason `operator_replay`. Enqueue after commit. 409 if not `dead`. |
+| `GET /admin/payments/{resource_id}` | API key | Current payment in the projection (status, amount, currency, last\_event\_id, last\_occurred\_at); 404 if none. Added in phase F10 for the simulator oracle. |
 
 Replay is safe to repeat: the CAS succeeds once, so concurrent calls enqueue once.
 
@@ -443,6 +444,8 @@ The API serves `/metrics`; the worker exposes its own metrics port. Counters tha
 ```
 
 **Implementation notes (phase F9).** Liveness is `GET /health/live` and readiness `GET /health`. The probes run in parallel, so readiness takes as long as the slowest timeout; only the database is critical (`down`, 503); a Redis or broker outage is `degraded` (200), because ingestion keeps working. Each process has its own registry: the API serves `/metrics`, the worker starts its metrics server on `WORKER_METRICS_PORT` (default 9100) from Celery's `worker_ready` signal, so beat, which loads the same module, opens no port. Every labelled series starts at 0. `hookgate_events_retried_total` also counts expired leases that go back to `failed`, and `hookgate_events_dead_total{reason}` uses the trigger (`permanent_error`, `transient_error` after the last attempt, `lease_expired`). `hookgate_processing_seconds` measures claimed work only (handler plus effect or failure transaction). `hookgate_events_by_status` is computed at scrape time with one `GROUP BY status` query; if the query fails the gauge is left out of that scrape. The worker task binds the `trace_id` message header to the structlog context, and the delayed retry message carries the same header.
+
+**Implementation notes (phase F10).** The simulator lives in `simulator/` and does not import `hookgate`: it signs with its own HMAC code and its oracle has its own list of event types and statuses, so it tests the service as a black box. A plan is built only from `random.Random(seed)` and a fixed base time; a run id (random by default) prefixes every event id, so a plan can be rebuilt later for `verify` and runs never collide. Verification waits until every expected event is final, then checks stored events, statuses, outcomes, the DLQ listing and every payment. `GET /admin/payments/{resource_id}` was added because event outcomes cannot show an ordering bug: with latest-wins deliberately broken, an older event applied after the latest one is still reported `applied`, and the outcome-only oracle passed; with the payment check it fails (mutation verified). The demo profile of the compose file runs the simulator inside the compose network.
 
 ## 16. Project structure, run and CI
 
