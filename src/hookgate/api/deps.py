@@ -10,6 +10,7 @@ from fastapi import Request
 from hookgate.api.errors import AdminAuthError, PayloadTooLarge
 from hookgate.application.ingest_event import IngestEvent
 from hookgate.application.inspect_events import InspectEvents
+from hookgate.application.inspect_payment import InspectPayment
 from hookgate.application.replay_event import ReplayEvent
 
 MAX_BODY_BYTES = 1024 * 1024  # 1 MiB (FR-ING-4)
@@ -71,6 +72,11 @@ def get_ingest_event(request: Request) -> IngestEvent:
 
 def get_inspect_events(request: Request) -> InspectEvents:
     inspect: InspectEvents = request.app.state.inspect_events
+    return inspect
+
+
+def get_inspect_payment(request: Request) -> InspectPayment:
+    inspect: InspectPayment = request.app.state.inspect_payment
     return inspect
 
 

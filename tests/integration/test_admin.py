@@ -403,3 +403,32 @@ def test_replay_with_the_broker_down_still_succeeds_and_the_sweeper_enqueues_it(
     )
     assert sweep().published == 1
     assert sweeper_publisher.published == [(event_id, "trace-evt_broker_down")]
+
+
+# -- payments read (oracle support, F10) ------------------------------------------------
+
+
+def test_payment_read_returns_the_projection_after_processing(
+    session_factory: Factory, client: TestClient, process: ProcessEvent
+) -> None:
+    event_id = insert_event(session_factory, "evt_pay", resource_id="pay_read")
+    assert process(event_id).outcome is ProcessOutcome.PROCESSED
+
+    response = client.get("/admin/payments/pay_read", headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["resource_id"], body["status"], body["amount"], body["currency"]) == (
+        "pay_read",
+        "succeeded",
+        1500,
+        "USD",
+    )
+    assert body["last_event_id"] == "evt_pay"
+    assert body["last_occurred_at"].startswith("2026-11-03T11:59:00")
+
+
+def test_payment_read_of_an_unknown_resource_is_404(client: TestClient) -> None:
+    response = client.get("/admin/payments/pay_nobody", headers=AUTH)
+
+    assert (response.status_code, response.json()) == (404, {"error": "payment_not_found"})
