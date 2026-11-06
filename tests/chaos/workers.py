@@ -54,4 +54,11 @@ class WorkerProcess:
 
 
 class StartWorker(Protocol):
-    def __call__(self, *, block_prefix: str = "", lease_s: int = 2) -> WorkerProcess: ...
+    def __call__(
+        self,
+        *,
+        block_prefix: str = "",
+        lease_s: int = 2,
+        role: str = "worker",
+        sweep_interval_s: int = 15,
+    ) -> WorkerProcess: ...

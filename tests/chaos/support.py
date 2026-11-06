@@ -3,7 +3,7 @@
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import httpx
@@ -11,6 +11,7 @@ from prometheus_client import CollectorRegistry
 from pydantic import SecretStr
 from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session, sessionmaker
+from tests.chaos.services import wait_until
 from tests.live_server import live_server
 
 from hookgate.api.main import create_app
@@ -19,6 +20,7 @@ from hookgate.application.ports import DedupeCache, EventPublisher, IngestionMet
 from hookgate.application.records import AttemptRecord, NewEvent, StoredEvent
 from hookgate.config import Settings
 from hookgate.domain.events import EventIdentity
+from hookgate.domain.states import EventStatus
 from hookgate.infrastructure.db.engine import session_scope
 from hookgate.infrastructure.db.repositories import EventRepository
 from simulator.client import envelope, signature_header
@@ -30,8 +32,10 @@ BASE = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
 Factory = sessionmaker[Session]
 
 
-def spec(event_id: str) -> EventSpec:
-    return EventSpec(event_id, "payment.succeeded", f"pay_{event_id}", BASE, 1500)
+def spec(event_id: str, minute: int = 0) -> EventSpec:
+    return EventSpec(
+        event_id, "payment.succeeded", f"pay_{event_id}", BASE + timedelta(minutes=minute), 1500
+    )
 
 
 def insert_event(factory: Factory, event_id: str) -> UUID:
@@ -69,6 +73,24 @@ def attempts(factory: Factory, event_id: UUID) -> list[AttemptRecord]:
 def count(factory: Factory, table: str) -> int:
     with session_scope(factory) as session:
         return int(session.execute(text(f"SELECT count(*) FROM {table}")).scalar_one())
+
+
+def find(factory: Factory, provider_event_id: str) -> StoredEvent | None:
+    with session_scope(factory) as session:
+        row = session.execute(
+            text("SELECT id FROM webhook_events WHERE event_id = :e"), {"e": provider_event_id}
+        ).first()
+        return None if row is None else EventRepository(session).get(row[0])
+
+
+def wait_for_status(
+    factory: Factory, provider_event_id: str, status: EventStatus, *, timeout_s: float = 60
+) -> None:
+    def reached() -> bool:
+        stored = find(factory, provider_event_id)
+        return stored is not None and stored.status is status
+
+    wait_until(reached, timeout_s=timeout_s, what=f"{provider_event_id} to be {status.value}")
 
 
 def deliver(client: httpx.Client, event: EventSpec) -> tuple[int, str, float]:

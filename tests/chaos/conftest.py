@@ -53,6 +53,14 @@ def redis_service(redis_url: str) -> Iterator[ServiceControl]:
 
 
 @pytest.fixture
+def rabbitmq_service(broker_url: str) -> Iterator[ServiceControl]:
+    service = ServiceControl("rabbitmq", is_up=broker_is_up(broker_url))
+    service.start()  # a previous run may have left it down
+    yield service
+    service.start()  # never leave it down for the next test
+
+
+@pytest.fixture
 def chaos_app(broker_url: str) -> Celery:
     """The production Celery configuration, routed to the chaos queue (emptied first)."""
     app = create_celery(broker_url, sweep_interval_s=15)
@@ -73,10 +81,16 @@ def publisher(chaos_app: Celery) -> CeleryPublisher:
 def start_worker(
     tmp_path: Path, database_url: str, broker_url: str, chaos_app: Celery
 ) -> Iterator[StartWorker]:
-    """Start a worker process; all of them are stopped at the end of the test."""
+    """Start a worker (or, with ``role="beat"``, Celery beat) process; all stop at the end."""
     workers: list[WorkerProcess] = []
 
-    def start(*, block_prefix: str = "", lease_s: int = 2) -> WorkerProcess:
+    def start(
+        *,
+        block_prefix: str = "",
+        lease_s: int = 2,
+        role: str = "worker",
+        sweep_interval_s: int = 15,
+    ) -> WorkerProcess:
         n = len(workers) + 1
         signal_dir = tmp_path / f"worker{n}"
         signal_dir.mkdir()
@@ -89,6 +103,8 @@ def start_worker(
             "CHAOS_SIGNAL_DIR": str(signal_dir),
             "CHAOS_BLOCK_PREFIX": block_prefix,
             "CHAOS_LEASE_S": str(lease_s),
+            "CHAOS_ROLE": role,
+            "CHAOS_SWEEP_INTERVAL_S": str(sweep_interval_s),
         }
         worker = WorkerProcess(signal_dir, tmp_path / f"worker{n}.log", env)
         workers.append(worker)

@@ -11,6 +11,9 @@ pool) with three test-only differences, all set through environment variables:
   worker holds a claimed event mid-task and can kill it (VR-4).
 
 ``<CHAOS_SIGNAL_DIR>/ready`` is written when the worker is consuming.
+
+With ``CHAOS_ROLE=beat`` the same app runs Celery beat instead, sending the sweep task
+every ``CHAOS_SWEEP_INTERVAL_S`` seconds (``ready`` is written when beat starts).
 """
 
 import os
@@ -18,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from celery.signals import worker_ready
+from celery.signals import beat_init, worker_ready
 from pydantic import SecretStr
 
 from hookgate.config import Settings
@@ -54,11 +57,17 @@ def main() -> None:
         webhook_secret=SecretStr("unused-secret"),
         admin_api_key=SecretStr("unused-admin-key"),
         lease_s=int(os.environ.get("CHAOS_LEASE_S", "2")),
+        sweep_interval_s=int(os.environ.get("CHAOS_SWEEP_INTERVAL_S", "15")),
         retry_base_s=0.2,
         retry_cap_s=0.5,
     )
     app = build_celery_app(settings, create_db_engine(settings.database_url), handler=handler)
     app.conf.task_default_queue = QUEUE
+    if os.environ.get("CHAOS_ROLE") == "beat":
+        beat_init.connect(signal_ready, weak=False)
+        schedule = SIGNAL_DIR / "celerybeat-schedule"
+        app.start(["beat", "--schedule", str(schedule), "--loglevel", "INFO"])
+        return
     worker_ready.connect(signal_ready, weak=False)
     app.worker_main(
         [
