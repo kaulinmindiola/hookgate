@@ -1,18 +1,30 @@
-"""Helpers shared by the chaos tests: stored events and simple database reads."""
+"""Helpers shared by the chaos tests: stored events, signed deliveries, a live API."""
 
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import text
+import httpx
+from prometheus_client import CollectorRegistry
+from pydantic import SecretStr
+from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session, sessionmaker
+from tests.live_server import live_server
 
+from hookgate.api.main import create_app
+from hookgate.application.health import Readiness
+from hookgate.application.ports import DedupeCache, EventPublisher, IngestionMetrics
 from hookgate.application.records import AttemptRecord, NewEvent, StoredEvent
+from hookgate.config import Settings
 from hookgate.domain.events import EventIdentity
 from hookgate.infrastructure.db.engine import session_scope
 from hookgate.infrastructure.db.repositories import EventRepository
-from simulator.client import envelope
+from simulator.client import envelope, signature_header
 from simulator.model import EventSpec
 
+SECRET = "chaos-webhook-secret"
 BASE = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
 
 Factory = sessionmaker[Session]
@@ -57,3 +69,48 @@ def attempts(factory: Factory, event_id: UUID) -> list[AttemptRecord]:
 def count(factory: Factory, table: str) -> int:
     with session_scope(factory) as session:
         return int(session.execute(text(f"SELECT count(*) FROM {table}")).scalar_one())
+
+
+def deliver(client: httpx.Client, event: EventSpec) -> tuple[int, str, float]:
+    """One signed delivery; returns status code, ``status``/``error`` and seconds taken."""
+    body = envelope(event)
+    headers = {
+        "Content-Type": "application/json",
+        "Hookgate-Signature": signature_header(SECRET, int(time.time()), body),
+    }
+    started = time.monotonic()
+    response = client.post("/webhooks/payments", content=body, headers=headers)
+    elapsed = time.monotonic() - started
+    payload = response.json()
+    return response.status_code, str(payload.get("status") or payload.get("error")), elapsed
+
+
+@contextmanager
+def live_api(
+    database_url: str,
+    engine: Engine,
+    *,
+    cache: DedupeCache,
+    publisher: EventPublisher,
+    readiness: Readiness,
+    metrics: IngestionMetrics | None = None,
+) -> Iterator[httpx.Client]:
+    """The production app on a real uvicorn server, with the given collaborators."""
+    settings = Settings(
+        database_url=database_url,
+        redis_url="redis://unused",
+        broker_url="amqp://unused:unused@127.0.0.1:1//",
+        webhook_secret=SecretStr(SECRET),
+        admin_api_key=SecretStr("chaos-admin-key"),
+    )
+    app = create_app(
+        settings,
+        engine=engine,
+        cache=cache,
+        publisher=publisher,
+        metrics=metrics,
+        metrics_registry=CollectorRegistry(),
+        readiness=readiness,
+    )
+    with live_server(app) as url, httpx.Client(base_url=url, timeout=30) as client:
+        yield client
