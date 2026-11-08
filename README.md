@@ -20,7 +20,7 @@ make run                      # start the API on http://127.0.0.1:8000
 make check                    # lint + types + unit/property tests + integration tests
 ```
 
-Other targets: `make format`, `make lint`, `make types`, `make test` (no database needed), `make test-integration` (needs `make up`), `make worker` (Celery worker against the local infrastructure), `make down`, `make chaos`.
+Other targets: `make format`, `make lint`, `make types`, `make test` (no database needed), `make test-integration` (needs `make up`), `make worker` (Celery worker against the local infrastructure), `make down`, `make chaos` and `make smoke` (see below).
 
 Integration tests use their own databases (`hookgate_test`, created on demand); set `TEST_DATABASE_URL` to point them elsewhere.
 
@@ -100,6 +100,20 @@ make demo                                      # the same inside the compose net
 ```
 
 Each run gets a random run id that prefixes its event ids, so runs never collide; the output ends with the `verify` command that re-checks that run later. Exit code 0 means every check passed. `HOOKGATE_URL`, `WEBHOOK_SECRET` and `ADMIN_API_KEY` (or `--url`, `--secret`, `--api-key`) point it at another deployment.
+
+## Failure suite
+
+`make chaos` (needs `make up`) proves with real services and processes that no acknowledged event is lost (NFR-1). The tests stop and start the compose services and kill real worker processes:
+
+| Test | What happens | What must hold |
+|---|---|---|
+| VR-4 `test_worker_kill.py` | A real Celery worker claims an event and hangs mid-task; it is killed (SIGKILL; TerminateProcess on Windows), also with 20 events in flight | With `LEASE_S=2` the sweeper recovers it; a second worker applies it; attempts `lease_expired` then `processed`; one effect per event |
+| VR-3 `test_redis_outage.py` | Redis is stopped in the middle of a delivery sequence and started again | Every delivery 202, duplicates still caught (by PostgreSQL during the outage), one row and one effect per event, cache errors counted, readiness `degraded` then `ok` |
+| VR-9 `test_broker_outage.py` | RabbitMQ is stopped during ingestion and started again | 202 within seconds, the event stays `received` and the sweeper enqueues it; after a restart the API and Celery beat publish again (the F7 finding) |
+
+They use their own queue (`hookgate.chaos`), so a running `make stack` does not interfere. Every test waits on state with a timeout, never on fixed sleeps; the suite passed 10 consecutive runs before it was merged. Each test was also checked against a deliberate bug (sweeper not recovering leases, publish without reconnect, Redis errors not caught): each one fails. The `chaos` CI job runs it on every pull request and on every push to `main`.
+
+`make smoke` starts the whole system (`docker compose up --build`) and runs the simulator's chaos scenario through the demo profile; the `smoke` CI job also runs every scenario on its own.
 
 ## Decisions
 

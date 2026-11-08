@@ -1,4 +1,4 @@
-.PHONY: install up down stack logs migrate run worker simulate demo format lint types test test-integration chaos check
+.PHONY: install up down stack logs migrate run worker simulate demo format lint types test test-integration chaos smoke check
 
 SCENARIO ?= chaos
 SEED ?= 7
@@ -53,6 +53,10 @@ test-integration:
 	uv run pytest -m integration
 
 chaos:
-	@echo "No chaos tests yet (they arrive in phase F11)."
+	uv run pytest -m chaos -v
+
+smoke:
+	docker compose up --build -d
+	docker compose --profile demo run --rm simulator run --scenario chaos --seed 7
 
 check: lint types test test-integration

@@ -78,3 +78,47 @@ jobs:
         run: uv sync --locked
       - name: Pytest with domain coverage gate (NFR-4)
         run: uv run pytest -m "not chaos" --cov=hookgate.domain --cov-report=term-missing --cov-fail-under=80
+
+  chaos:
+    # VR-3, VR-4, VR-9 with real services and processes: the tests stop and start the
+    # compose services and kill real worker processes (tests/chaos, F11).
+    runs-on: ubuntu-latest
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://hookgate:hookgate@127.0.0.1:5432/hookgate_test?connect_timeout=5
+      TEST_REDIS_URL: redis://127.0.0.1:6379/15
+      TEST_BROKER_URL: amqp://hookgate:hookgate@127.0.0.1:5672//
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Start PostgreSQL, Redis and RabbitMQ
+        run: docker compose up -d --wait postgres redis rabbitmq
+      - name: Chaos suite
+        run: uv run pytest -m chaos -v
+      - name: Service logs
+        if: failure()
+        run: docker compose logs postgres redis rabbitmq
+
+  smoke:
+    # The whole system from one command (NFR-5), driven by the simulator (FR-SIM-3).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the whole system
+        run: docker compose up --build -d
+      - name: Chaos scenario with verify
+        run: docker compose --profile demo run --rm -T simulator run --scenario chaos --seed 7
+      - name: Every scenario on its own
+        run: |
+          for scenario in happy duplicates delayed out_of_order burst bad_signature expired poison; do
+            docker compose --profile demo run --rm -T simulator run --scenario "$scenario" --seed 1
+          done
+      - name: Service logs
+        if: failure()
+        run: docker compose logs
+      - name: Stop
+        if: always()
+        run: docker compose down -v
