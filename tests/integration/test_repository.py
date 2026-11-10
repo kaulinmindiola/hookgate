@@ -10,7 +10,7 @@ from sqlalchemy import insert, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from hookgate.application.records import NewEvent, StoredEvent
+from hookgate.application.records import EventQuery, NewEvent, PageKey, StoredEvent
 from hookgate.domain.events import EventIdentity
 from hookgate.domain.outcomes import EventOutcome
 from hookgate.domain.states import EventStatus, TransitionResult, Trigger, transition
@@ -410,7 +410,7 @@ def test_applied_effects_rejects_an_effect_for_an_unknown_event(
 # -- listing ----------------------------------------------------------------------
 
 
-def test_list_by_status_filters_orders_and_pages_by_keyset(session_factory: Factory) -> None:
+def test_list_events_filters_by_status_and_pages_by_keyset(session_factory: Factory) -> None:
     ids = [
         insert_event(session_factory, make_event(f"evt_{i}", received_at=T0 + timedelta(seconds=i)))
         for i in range(5)
@@ -420,12 +420,12 @@ def test_list_by_status_filters_orders_and_pages_by_keyset(session_factory: Fact
 
     with session_scope(session_factory) as session:
         repository = EventRepository(session)
-        dead = repository.list_by_status([S.DEAD], limit=10)
-        received_first = repository.list_by_status([S.RECEIVED], limit=2)
-        received_next = repository.list_by_status(
-            [S.RECEIVED],
+        dead = repository.list_events(EventQuery(statuses=(S.DEAD,)), limit=10)
+        received_first = repository.list_events(EventQuery(statuses=(S.RECEIVED,)), limit=2)
+        received_next = repository.list_events(
+            EventQuery(statuses=(S.RECEIVED,)),
             limit=2,
-            after=(received_first[-1].received_at, received_first[-1].id),
+            after=PageKey(received_at=received_first[-1].received_at, id=received_first[-1].id),
         )
 
     assert [event.id for event in dead] == [ids[1], ids[3]]

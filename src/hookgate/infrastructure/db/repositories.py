@@ -6,7 +6,6 @@ authoritative (ADR-011, decision P3): tests move time by back-dating columns.
 """
 
 import uuid
-from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any, cast
 
@@ -135,17 +134,6 @@ class EventRepository:
     def get(self, event_id: uuid.UUID) -> StoredEvent | None:
         row = self._session.execute(select(_EVENTS).where(_EVENTS.c.id == event_id)).first()
         return None if row is None else _to_stored(row)
-
-    def list_by_status(
-        self,
-        statuses: Sequence[EventStatus],
-        *,
-        limit: int,
-        after: tuple[datetime, uuid.UUID] | None = None,
-    ) -> list[StoredEvent]:
-        """Page through events of the given statuses ordered by ``(received_at, id)``."""
-        key = None if after is None else PageKey(received_at=after[0], id=after[1])
-        return self.list_events(EventQuery(statuses=tuple(statuses)), limit=limit, after=key)
 
     def list_events(
         self, query: EventQuery, *, limit: int, after: PageKey | None = None
