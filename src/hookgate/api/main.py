@@ -9,6 +9,7 @@ probe, or a scrape) needs it.
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from importlib.metadata import version
 
 from fastapi import FastAPI, Request, Response
 from prometheus_client import CollectorRegistry
@@ -51,6 +52,8 @@ from hookgate.infrastructure.metrics import (
     StatusCounts,
 )
 from hookgate.infrastructure.queue import CeleryPublisher
+
+APP_VERSION = version("hookgate")  # single source: pyproject.toml
 
 
 async def _trace_id_middleware(
@@ -139,7 +142,7 @@ def create_app(
     assert admin_events is not None
     assert payment_reads is not None
 
-    app = FastAPI(title="Hookgate", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Hookgate", version=APP_VERSION, lifespan=lifespan)
     app.state.admin_api_key = settings.admin_api_key.get_secret_value().encode("utf-8")
     app.state.metrics_registry = registry
     app.state.ingestion_metrics = ingestion_metrics

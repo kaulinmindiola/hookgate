@@ -1,6 +1,6 @@
 [project]
 name = "hookgate"
-version = "0.1.0"
+version = "1.0.0"
 description = "Receives payment-provider webhooks without losing events and without processing any of them twice."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

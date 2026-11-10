@@ -20,6 +20,7 @@ from tests.fakes import FixedClock, RecordingPublisher
 from tests.live_server import live_server
 
 from hookgate.api.main import create_app
+from hookgate.application.records import EventQuery
 from hookgate.config import Settings
 from hookgate.domain.signature import build_signature_header
 from hookgate.domain.states import EventStatus
@@ -104,7 +105,7 @@ def test_simultaneous_deliveries_store_and_publish_exactly_once(
     with session_scope(session_factory) as session:
         rows = int(session.execute(text("SELECT count(*) FROM webhook_events")).scalar_one())
         repository = EventRepository(session)
-        (stored,) = repository.list_by_status([EventStatus.RECEIVED], limit=10)
+        (stored,) = repository.list_events(EventQuery(statuses=(EventStatus.RECEIVED,)), limit=10)
         transitions = repository.list_transitions(stored.id)
     assert rows == 1
     assert publisher.published[0][0] == stored.id

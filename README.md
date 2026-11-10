@@ -1,11 +1,93 @@
 # Hookgate
 
-**Hookgate receives payment-provider webhooks without losing events and without processing any of them twice.**
+**Payment providers deliver webhooks at least once, so a receiver sees duplicates, delays, reordering and retries; Hookgate receives them without losing an event and without applying any of them twice.**
 
-Payment providers deliver webhooks at-least-once: duplicates, delays, reordering and retries after timeouts are normal. A naive receiver either drops events (crash between receiving and processing) or applies an effect twice (a retry races the original). Hookgate guarantees durable receipt before acknowledging, effectively-once effects and order-safe resource state.
+A naive receiver either drops events (it crashes between answering the provider and processing) or applies an effect twice (a retry races the original). Hookgate stores every delivery durably before it answers, applies each event's effect once, and keeps resource state correct whatever the arrival order. Every claim below links to the test that proves it.
 
-> **Status:** work in progress. Nothing below is claimed as implemented until it has test evidence.
-> Design: [`docs/srs-sdd.md`](docs/srs-sdd.md).
+Python 3.12 · FastAPI · PostgreSQL · Redis · RabbitMQ · Celery · SQLAlchemy 2 · Prometheus · Docker Compose. Design: [`docs/srs-sdd.md`](docs/srs-sdd.md) (requirements FR-/NFR-, verification VR-).
+
+## Quick start
+
+Requirements: Docker with Compose.
+
+```bash
+docker compose up --build -d                       # everything, migrations included (NFR-5)
+docker compose --profile demo run --rm simulator   # a simulated provider sends 73 deliveries
+                                                   # (duplicates, reordering, bad signatures,
+                                                   # poison) and checks the final state
+```
+
+The simulator ends with `OK (python -m simulator verify ...)` when every check passes. The API is on http://127.0.0.1:8000 (`/health`, `/metrics`, `/docs`); `docker compose down` stops it all.
+
+## How it works
+
+```mermaid
+flowchart LR
+    P[Payment provider] -->|signed POST| API[API: verify HMAC]
+    API -->|1 seen?| R[(Redis: dedupe fast path)]
+    API -->|2 INSERT ... ON CONFLICT, commit| PG[(PostgreSQL: events table = outbox)]
+    API -->|3 publish, best effort| MQ[[RabbitMQ]]
+    API -->|202| P
+    MQ --> W[Celery worker]
+    W -->|claim with lease, apply once, audit| PG
+    B[Celery beat] -->|sweep every 15 s| MQ
+    OP[Operator] -->|X-API-Key| ADM[Admin API: list, inspect, replay]
+    ADM --> PG
+```
+
+1. **Receive.** The API checks the HMAC signature and the timestamp, then inserts the event with `INSERT ... ON CONFLICT (provider, event_id) DO NOTHING` and commits **before** answering `202`. A conflict means a duplicate. Redis only remembers recent ids so duplicates skip the database; it is written after the commit, so it never knows an event that was not stored (ADR-001, ADR-003).
+2. **Enqueue.** The publish to RabbitMQ is best effort. If it fails, the event is still durable, and the sweeper (run by beat) re-publishes events that were stored but never processed (ADR-002, ADR-007).
+3. **Process.** A worker claims the event with a compare-and-set `UPDATE` and a lease, applies the effect and inserts into `applied_effects` (unique per event) in one transaction, and records every state change in an audit table. A crashed worker's lease expires and the sweeper hands the event to another worker.
+4. **Order.** Each payment row keeps the ordering key `(occurred_at, event_id)` of its last applied event; an older event ends `processed` with outcome `ignored_stale` and no effect (FR-ORD).
+5. **Fail.** Transient errors retry with capped, jittered exponential backoff; permanent errors and exhausted retries end `dead`, visible and replayable through the admin API.
+
+## Evidence
+
+| Guarantee | How it is proven | Where |
+|---|---|---|
+| No acknowledged event is lost when a worker is killed mid-task (NFR-1) | A real Celery worker process is killed with SIGKILL while it holds a claimed event; the sweeper recovers it and a second worker applies it once (VR-4) | [`tests/chaos/test_worker_kill.py`](tests/chaos/test_worker_kill.py) |
+| ... when Redis goes down (NFR-1) | The real Redis container is stopped mid-sequence and restarted: every delivery 202, one row and one effect per event, readiness `degraded` then `ok` (VR-3) | [`tests/chaos/test_redis_outage.py`](tests/chaos/test_redis_outage.py) |
+| ... when RabbitMQ goes down (NFR-1) | The real broker is stopped during ingestion: 202, the event waits as `received`, the sweeper enqueues it; the API and beat publish again after the restart (VR-9) | [`tests/chaos/test_broker_outage.py`](tests/chaos/test_broker_outage.py) |
+| The same event delivered N times, in any order, gives one row and one effect | Hypothesis against a real database (VR-1) | [`tests/integration/test_effect_once_property.py`](tests/integration/test_effect_once_property.py) |
+| 32 simultaneous deliveries of one event: one row, one enqueue, one `accepted` | 32 threads released by a barrier against a real server, with Redis up and unreachable (VR-7) | [`tests/integration/test_burst.py`](tests/integration/test_burst.py) |
+| Final state does not depend on arrival order | Hypothesis over permutations of each payment's events (VR-2) | [`tests/integration/test_ordering_property.py`](tests/integration/test_ordering_property.py) |
+| Retries with backoff; poison payloads end `dead` | Failing handlers with an injected clock (VR-5, VR-6); retry delay property (VR-11) | [`tests/integration/test_processing.py`](tests/integration/test_processing.py), [`tests/property/test_retry_properties.py`](tests/property/test_retry_properties.py) |
+| Replay of dead events, including concurrent replays | Admin API against a real database (VR-10) | [`tests/integration/test_admin.py`](tests/integration/test_admin.py) |
+| No illegal state transition | Random trigger sequences (VR-12) | [`tests/property/test_state_machine_properties.py`](tests/property/test_state_machine_properties.py) |
+| Forged, altered or stale deliveries are rejected | Unit and property tests of the signature and the timestamp window (VR-8) | [`tests/property/test_signature_properties.py`](tests/property/test_signature_properties.py) |
+| The whole system works end to end | `docker compose up --build`, then every simulator scenario with its oracle (CI `smoke` job) | [`simulator/`](simulator/), [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+| Quality gates (NFR-4, NFR-7) | ruff, mypy `--strict`, 100 % coverage of the domain package (gate: 80 %), no I/O imports in the domain | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+
+The failure tests were each checked against a deliberate bug (sweeper not recovering leases, publish without reconnect, Redis errors not caught): each one fails with it. The chaos suite passed 10 consecutive runs before it was merged. CI runs lint, types, unit, property and integration tests, the chaos suite and the smoke test on every pull request.
+
+## Measurements
+
+Indicative only: one Windows 11 laptop (12 logical CPUs), the compose stack, measured from the client over HTTP on loopback with [`scripts/bench.py`](scripts/bench.py) (`make bench`). Full report: [`docs/benchmark.md`](docs/benchmark.md).
+
+| Ingestion latency (500 sequential new events) | p50 | p95 | p99 | max | NFR-2 target (p95) |
+|---|---|---|---|---|---|
+| Redis up | 8.6 ms | 12.9 ms | 17.0 ms | 26.6 ms | < 100 ms: met |
+| Redis down | 8.2 ms | 10.9 ms | 15.9 ms | 28.0 ms | < 150 ms: met |
+
+| Throughput (NFR-3), 2000 new events, 8 clients | Value |
+|---|---|
+| Accepted by the API | 187 events/s |
+| End to end, until none is pending (worker: 8 threads) | 139 events/s |
+
+**A finding behind the Redis-down row.** The first benchmark run never finished: in the compose network a stopped Redis container makes every lookup of the name `redis` take about 3.5 s, which the 50 ms socket timeouts do not bound, so each delivery took about 7 s. The cache now skips Redis for 5 s after a failure and lets PostgreSQL decide; an outage costs one slow call per 5 s instead of two per delivery (details in the SDD, phase F12 notes). The measured Redis-down phase lasted less than one cool-down, so that occasional slow delivery does not appear in the table.
+
+## Limitations
+
+- Not exactly-once delivery: effectively-once effects under the stated assumptions.
+- Ordering relies on the provider's `occurred_at` and on full-snapshot events; skewed provider clocks or delta events break the guarantee.
+- Single PostgreSQL primary; no sharding or failover handling.
+- A restored database backup can leave Redis markers for events the restored database no longer has, so redelivered events are dropped as duplicates until the markers expire; flush the Redis dedupe keys after any restore.
+- While Redis is down in the compose network, one delivery every 5 s still pays the name lookup (about 3.5 s on the test machine) when the cache probes Redis again.
+- One shared webhook secret, without rotation; a static admin API key.
+- No rate limiting, backpressure or retention policy for stored raw bodies.
+- The provider is simulated; real provider quirks are not covered.
+- Throughput and latency numbers come from a single laptop and are indicative only.
+- Dead events need a human to replay them; there is no alerting.
 
 ## Development
 
@@ -20,21 +102,15 @@ make run                      # start the API on http://127.0.0.1:8000
 make check                    # lint + types + unit/property tests + integration tests
 ```
 
-Other targets: `make format`, `make lint`, `make types`, `make test` (no database needed), `make test-integration` (needs `make up`), `make worker` (Celery worker against the local infrastructure), `make down`, `make chaos` and `make smoke` (see below).
+Other targets: `make format`, `make lint`, `make types`, `make test` (no database needed), `make test-integration` (needs `make up`), `make worker` (Celery worker against the local infrastructure), `make stack` (the whole system, detached), `make logs`, `make down`, `make chaos`, `make smoke` and `make bench` (see below).
 
-Integration tests use their own databases (`hookgate_test`, created on demand); set `TEST_DATABASE_URL` to point them elsewhere.
+Integration tests use their own databases (`hookgate_test`, created on demand); set `TEST_DATABASE_URL` to point them elsewhere. Configuration comes from environment variables only; `.env.example` lists every variable with its default.
 
-## Running the whole system
-
-```bash
-docker compose up --build       # or: make stack (detached), then make logs
-```
-
-This builds one image and starts PostgreSQL, Redis, RabbitMQ, a one-shot `migrate` job, the `api` on http://127.0.0.1:8000, the Celery `worker` (thread pool) and `beat` (runs the sweeper every 15 s). Stop `make run` first if it is using port 8000. A signed webhook sent as shown below is then processed by the worker; `docker compose logs -f worker` shows its JSON log lines with the `trace_id`.
+The code follows the layers of the SDD: `domain` (pure rules, no I/O, checked in CI), `application` (use cases and ports), `infrastructure` (PostgreSQL, Redis, Celery, metrics) and `api` (FastAPI routers).
 
 ## Sending a signed webhook
 
-`POST /webhooks/payments` accepts a delivery only if `Hookgate-Signature: t=<unix seconds>,v1=<hex>` is an HMAC-SHA256 of `<t>.<raw body>` with `WEBHOOK_SECRET`, and `t` is within 300 s of the server clock. With the API running (`make run`), this sends one event using the development secret from `.env.example`:
+`POST /webhooks/payments` accepts a delivery only if `Hookgate-Signature: t=<unix seconds>,v1=<hex>` is an HMAC-SHA256 of `<t>.<raw body>` with `WEBHOOK_SECRET`, and `t` is within 300 s of the server clock. With the API running, this sends one event using the development secret from `.env.example`:
 
 ```python
 import json, time
@@ -73,6 +149,7 @@ curl -H "$KEY" "http://127.0.0.1:8000/admin/events?status=dead&limit=20"   # old
 curl -H "$KEY" "http://127.0.0.1:8000/admin/events?cursor=<next_cursor>"   # next page
 curl -H "$KEY" "http://127.0.0.1:8000/admin/events/<id>"                   # raw body, transitions, attempts
 curl -X POST -H "$KEY" "http://127.0.0.1:8000/admin/events/<id>/replay"    # dead -> received, enqueued
+curl -H "$KEY" "http://127.0.0.1:8000/admin/payments/<resource_id>"        # current payment state
 ```
 
 - `GET /admin/events`: filters `status` (repeatable), `resource_id`, `event_type`; `limit` 1 to 200 (default 50). Items are ordered by `(received_at, id)`; `next_cursor` is `null` on the last page, and pages never repeat or skip an event. A cursor not produced by the API is `400 invalid_cursor`.
@@ -103,24 +180,20 @@ Each run gets a random run id that prefixes its event ids, so runs never collide
 
 ## Failure suite
 
-`make chaos` (needs `make up`) proves with real services and processes that no acknowledged event is lost (NFR-1). The tests stop and start the compose services and kill real worker processes:
+`make chaos` (needs `make up`) runs the three chaos tests of the evidence table with real services and processes: the tests stop and start the compose services with `docker compose` and kill real worker processes. They use their own queue (`hookgate.chaos`), so a running `make stack` does not interfere, and every test waits on state with a timeout, never on fixed sleeps. Besides VR-3, VR-4 and VR-9, two regression tests cover a finding of phase F7: after a broker restart, the API's first publish and Celery beat's sweeps must go through.
 
-| Test | What happens | What must hold |
-|---|---|---|
-| VR-4 `test_worker_kill.py` | A real Celery worker claims an event and hangs mid-task; it is killed (SIGKILL; TerminateProcess on Windows), also with 20 events in flight | With `LEASE_S=2` the sweeper recovers it; a second worker applies it; attempts `lease_expired` then `processed`; one effect per event |
-| VR-3 `test_redis_outage.py` | Redis is stopped in the middle of a delivery sequence and started again | Every delivery 202, duplicates still caught (by PostgreSQL during the outage), one row and one effect per event, cache errors counted, readiness `degraded` then `ok` |
-| VR-9 `test_broker_outage.py` | RabbitMQ is stopped during ingestion and started again | 202 within seconds, the event stays `received` and the sweeper enqueues it; after a restart the API and Celery beat publish again (the F7 finding) |
-
-They use their own queue (`hookgate.chaos`), so a running `make stack` does not interfere. Every test waits on state with a timeout, never on fixed sleeps; the suite passed 10 consecutive runs before it was merged. Each test was also checked against a deliberate bug (sweeper not recovering leases, publish without reconnect, Redis errors not caught): each one fails. The `chaos` CI job runs it on every pull request and on every push to `main`.
-
-`make smoke` starts the whole system (`docker compose up --build`) and runs the simulator's chaos scenario through the demo profile; the `smoke` CI job also runs every scenario on its own.
+`make smoke` starts the whole system (`docker compose up --build`) and runs the simulator's chaos scenario; the `smoke` CI job also runs every scenario on its own. `make bench` measures latency and throughput against the running stack (it stops and restarts Redis) and writes `docs/benchmark.md`.
 
 ## Decisions
 
 - [ADR-001: PostgreSQL is the source of truth](docs/adr/001-postgresql-source-of-truth.md)
 - [ADR-002: RabbitMQ as the broker, separate from the Redis cache](docs/adr/002-rabbitmq-broker.md)
+- [ADR-005: Synchronous SQLAlchemy 2.0 with psycopg 3 everywhere](docs/adr/005-sync-sqlalchemy.md)
 - [ADR-007: Lease plus sweeper instead of broker redelivery](docs/adr/007-lease-and-sweeper.md)
+- [ADR-011: The pure transition() function decides; SQL applies](docs/adr/011-pure-transition-sql-applies.md)
 - [ADR-012: Celery worker uses the thread pool](docs/adr/012-celery-thread-pool.md)
+
+The other decisions are recorded in the SDD (section 7, ADR index, and section 18).
 
 ## License
 

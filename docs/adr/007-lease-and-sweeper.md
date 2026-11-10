@@ -22,6 +22,7 @@ PostgreSQL's `now()` is the only clock for leases and retry times. Tests never m
 ## Consequences
 
 - Recovery is testable without a specific broker: `tests/integration/test_sweep.py` covers a crashed worker (effect applied once, attempts `[lease_expired, processed]`) and a broker outage at ingestion (VR-9 at application level).
+- The chaos suite (F11) checks the same recovery with real processes: a worker killed with SIGKILL while it holds a claim (`tests/chaos/test_worker_kill.py`, `LEASE_S=2`) and a stopped RabbitMQ (`tests/chaos/test_broker_outage.py`).
 - A crashed event is retried after its lease plus its backoff, not immediately.
 - Concurrent sweepers split the work instead of waiting on each other (`SKIP LOCKED`).
 - Retries also get a delayed task message (`countdown` = backoff + 0.5 s) so they run on time; the database value stays authoritative, and an early message is just a skipped claim.

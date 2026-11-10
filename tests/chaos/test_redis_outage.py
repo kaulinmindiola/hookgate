@@ -11,7 +11,7 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import Engine
-from tests.chaos.services import ServiceControl
+from tests.chaos.services import ServiceControl, wait_until
 from tests.chaos.support import Factory, count, deliver, live_api, spec
 from tests.fakes import FixedRng, RecordingMetrics
 
@@ -83,8 +83,13 @@ def test_redis_down_mid_sequence_never_fails_a_delivery_nor_duplicates_an_effect
         assert (health.status_code, health.json()["status"]) == (200, "degraded")
 
         redis_service.start()
+        # After a failure the cache skips Redis for a cool-down; readiness probes it again.
+        wait_until(
+            lambda: api.get("/health").json()["status"] == "ok",
+            timeout_s=30,
+            what="readiness to report ok again",
+        )
         send("e3", "e5", "e5", "e1", "e4")  # Redis back
-        assert api.get("/health").json()["status"] == "ok"
     cache.close()
 
     for event_id, answers in results.items():

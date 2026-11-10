@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from tests.fakes import FixedClock, RecordingPublisher
 
 from hookgate.api.main import create_app
+from hookgate.application.records import EventQuery
 from hookgate.config import Settings
 from hookgate.domain.events import EventIdentity
 from hookgate.domain.signature import build_signature_header
@@ -86,7 +87,7 @@ def test_accepted_delivery_is_durable_with_exact_bytes_and_audit_row(
     assert post(client, raw, **{"X-Trace-Id": "it-trace-1"}) == (202, "accepted")
     with session_scope(session_factory) as session:
         repository = EventRepository(session)
-        (stored,) = repository.list_by_status([EventStatus.RECEIVED], limit=10)
+        (stored,) = repository.list_events(EventQuery(statuses=(EventStatus.RECEIVED,)), limit=10)
         transitions = repository.list_transitions(stored.id)
     assert stored.raw_body == raw
     assert (stored.provider, stored.event_id) == ("sim", "evt_1")

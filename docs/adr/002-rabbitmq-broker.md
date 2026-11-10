@@ -16,6 +16,7 @@ Use RabbitMQ as the broker. Redis stays a cache only.
 - One more compose service and one more CI service in the chaos job.
 - Publishing is bounded by design. Opening a connection is tried once (kombu would otherwise retry a refused connection until its timeout, making the provider wait), and a connection found dead is reconnected once, immediately (`task_publish_retry_policy` with `max_retries=1` and no sleeping). Measured against RabbitMQ 3.13: a stopped broker fails the publish in 0 to 2 ms; the event is already durable and the sweeper republishes it (ADR-007).
 - The single reconnect is required, not an optimization. Without it a producer keeps its dead channel after a broker restart: Celery beat (one cached producer) never sent another sweep and events stayed `received` forever, found during the manual VR-9 check in phase F7 and reproduced against a real RabbitMQ; the API also lost its first publish after each restart.
+- Both cases have regression tests against a real RabbitMQ that is stopped and started again (`tests/chaos/test_broker_outage.py`, F11).
 
 ## Alternatives considered
 
