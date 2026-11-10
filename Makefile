@@ -1,4 +1,4 @@
-.PHONY: install up down stack logs migrate run worker simulate demo format lint types test test-integration chaos smoke check
+.PHONY: install up down stack logs migrate run worker simulate demo format lint types test test-integration chaos smoke bench check
 
 SCENARIO ?= chaos
 SEED ?= 7
@@ -58,5 +58,8 @@ chaos:
 smoke:
 	docker compose up --build -d
 	docker compose --profile demo run --rm simulator run --scenario chaos --seed 7
+
+bench:
+	uv run python -m scripts.bench --output docs/benchmark.md
 
 check: lint types test test-integration
