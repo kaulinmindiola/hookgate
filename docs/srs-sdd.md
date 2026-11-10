@@ -254,7 +254,7 @@ worker receives task(event_id)
 
 ## 7. Technology and decisions (ADR index)
 
-ADRs 001, 002, 005, 007, 011 and 012 have their own file in `docs/adr/`; the others are recorded only in this table.
+Every ADR in this table has its own file in `docs/adr/`, with context, consequences and alternatives.
 
 | ADR | Decision | Rationale |
 | --- | --- | --- |

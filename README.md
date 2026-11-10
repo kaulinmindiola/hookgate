@@ -188,12 +188,18 @@ Each run gets a random run id that prefixes its event ids, so runs never collide
 
 - [ADR-001: PostgreSQL is the source of truth](docs/adr/001-postgresql-source-of-truth.md)
 - [ADR-002: RabbitMQ as the broker, separate from the Redis cache](docs/adr/002-rabbitmq-broker.md)
+- [ADR-003: Redis is only a dedupe fast path, written after commit](docs/adr/003-redis-dedupe-fast-path.md)
+- [ADR-004: The dead-letter queue is a status on the events table](docs/adr/004-dlq-as-status.md)
 - [ADR-005: Synchronous SQLAlchemy 2.0 with psycopg 3 everywhere](docs/adr/005-sync-sqlalchemy.md)
+- [ADR-006: Ordering key (occurred_at, event_id) per resource](docs/adr/006-ordering-key.md)
 - [ADR-007: Lease plus sweeper instead of broker redelivery](docs/adr/007-lease-and-sweeper.md)
+- [ADR-008: Attempts increment at claim, not at failure](docs/adr/008-attempts-at-claim.md)
+- [ADR-009: Layered structure with a pure domain](docs/adr/009-layers-and-pure-domain.md)
+- [ADR-010: Celery delivery settings](docs/adr/010-celery-delivery-settings.md)
 - [ADR-011: The pure transition() function decides; SQL applies](docs/adr/011-pure-transition-sql-applies.md)
 - [ADR-012: Celery worker uses the thread pool](docs/adr/012-celery-thread-pool.md)
 
-The other decisions are recorded in the SDD (section 7, ADR index, and section 18).
+Section 18 of the SDD records the smaller decisions taken before the build (D1 to D7).
 
 ## License
 
