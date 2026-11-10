@@ -1,6 +1,8 @@
 # Hookgate — SRS and SDD
 
-Version 0.2 · 2026-11-02 · Status: decisions accepted
+Version 0.3 · 2026-11-10 · Status: implemented (v1.0.0)
+
+Changes since v0.2: implementation notes per phase (F4 to F12) in the design sections; the decisions taken during the build (P3 database clock, P5 empty projection rows, P6 body comparison, P8 test isolation) recorded where they apply; `GET /admin/payments/{resource_id}` added for the simulator oracle (section 14); the Redis adapter skips Redis for a cool-down after a failure (sections 7 and 11, F12 notes); limitations updated (section 17.2).
 
 **Hookgate receives payment-provider webhooks without losing events and without processing any of them twice.**
 
@@ -252,11 +254,13 @@ worker receives task(event_id)
 
 ## 7. Technology and decisions (ADR index)
 
+ADRs 001, 002, 005, 007, 011 and 012 have their own file in `docs/adr/`; the others are recorded only in this table.
+
 | ADR | Decision | Rationale |
 | --- | --- | --- |
 | 001 | PostgreSQL is the source of truth; the events table doubles as the outbox. | Removes the dual-write problem: an event is durable before any queue is touched. |
 | 002 | **\[DECISION\]** Broker: RabbitMQ chosen over Redis (accepted). | With Redis as both cache and broker, a Redis outage also stops enqueueing, which blurs the failure test. RabbitMQ isolates the cache failure; cost is one more compose service. |
-| 003 | Redis is only a dedupe fast path, written after commit. | A marker can never exist for an event that was not persisted. |
+| 003 | Redis is only a dedupe fast path, written after commit. After a failed call it is skipped for a 5 s cool-down (F12). | A marker can never exist for an event that was not persisted. An outage costs one failed call per cool-down, whatever the failure mode. |
 | 004 | DLQ is a status on the same table, not a separate table. | Replay becomes a state transition with an audit row; no copying. |
 | 005 | **\[DECISION\]** Sync SQLAlchemy 2.0 with psycopg 3 everywhere (accepted); async API left as a follow-up. | Celery is synchronous; one session style halves the surface. FastAPI runs `def` endpoints in a threadpool. Async can be a documented follow-up. |
 | 006 | Ordering key `(occurred_at, event_id)`. | Total order even when timestamps tie; deterministic. |
@@ -344,10 +348,11 @@ Two layers with distinct roles: **PostgreSQL decides, Redis only saves work.**
 | --- | --- |
 | Redis healthy, event known | GET hits, return duplicate without touching PostgreSQL. |
 | Redis healthy, event new | GET misses, INSERT, commit, SET marker. |
-| Redis down or timing out | GET/SET raise; caught, metric `cache_errors_total` incremented, flow continues with PostgreSQL. Socket timeouts are short (50 ms) so an outage does not add latency. |
+| Redis down or timing out | GET/SET raise; caught, metric `cache_errors_total` incremented, flow continues with PostgreSQL. Socket timeouts are short (50 ms), and after a failure Redis is skipped for a 5 s cool-down (one call then probes it), so an outage adds latency to at most one call per cool-down; in the compose network that call can take seconds, because a stopped container's name takes seconds to fail to resolve (F12 notes). |
 | Marker evicted or expired | GET misses, INSERT conflicts, duplicate detected by PostgreSQL. |
 | Crash after commit, before SET | Marker missing; next duplicate is caught by PostgreSQL. |
-| Marker exists but row missing | Cannot happen by construction (SET after commit); only after a database restore, where a redelivered event is treated as a duplicate and never re-inserted until its marker expires, a lost event that the provider's next retry cannot fix. Runbook: flush the Redis dedupe keys after any restore. Documented as a limitation. |
+| Marker exists but row missing | Cannot happen by construction (SET after commit); only after a database restore, where a redelivered event is treated as a duplicate and never re-inserted until its marker expires, a lost event that the provider's next retry cannot fix. Runbook: flush the Redis dedupe keys after any restore.
+- While Redis is down in the compose network, one delivery per cool-down (5 s) still pays the name lookup of the stopped container (about 3.5 s on the test machine) when the cache probes Redis again. Documented as a limitation. |
 
 **Implementation notes (phase F4).** Marker key `hookgate:dedupe:<provider>:<event_id>`, value `1`, TTL `DEDUPE_TTL_S`. The Redis client uses `REDIS_SOCKET_TIMEOUT_S` for connect and read and has client retries disabled: redis-py retries connection and timeout errors by default with backoff, which would add seconds per delivery during an outage. The marker is written after the commit for accepted events and also when PostgreSQL detects a duplicate (the row exists, so re-marking is safe). Limitation: a duplicate short-circuited by a Redis hit is not compared with the stored body, so FR-IDE-6 is detected only on the PostgreSQL path. Until the Prometheus adapter (phase F9), cache errors are counted through the `IngestionMetrics` port in tests and logged as `cache_error` in the running service.
 
@@ -483,17 +488,18 @@ Import rule check (domain must not import infrastructure or framework code) runs
 ### 17.1 How the hard tests work
 
 - **Hypothesis (VR-1, VR-2).** Strategy draws events from a small id pool to force duplicates, uses `st.permutations` and repeat counts, runs through the application use cases against a real database, truncating the tables at the start of each example (the claim and the transitions need real commits, so rolled-back transactions cannot be used), with processing invoked directly (no broker) for speed. Assertions: row count equals distinct ids, `applied_effects` count equals distinct applied events, final projection equals the oracle (latest event per resource).
-- **Redis outage (VR-3).** Unit level with a `FaultyCache` that raises after N calls; integration level stops the Redis container mid-sequence and restarts it.
+- **Redis outage (VR-3).** Unit level with a `FaultyCache` that raises after N calls; the chaos suite (F11) stops the real Redis container mid-sequence and restarts it.
 - **Worker kill (VR-4).** Start a real worker subprocess; a test-only handler hook blocks and signals through a file; the test sends SIGKILL, starts a new worker, advances past the lease, and asserts a single effect.
 - **Transient and poison (VR-5, VR-6).** A configurable failing handler with an injected clock and RNG; assertions on delays, attempts, audit rows and final status.
 - **Concurrency (VR-7).** 32 threads released by a barrier hit the endpoint with the same signed event; assertions on row count, enqueue count and effect count.
 
-### 17.2 Limitations (to be copied into the README)
+### 17.2 Limitations (copied into the README)
 
 - Not exactly-once delivery; effectively-once effects under the stated assumptions.
 - Ordering relies on provider-supplied `occurred_at` and full-snapshot events; skewed provider clocks or delta events break the guarantee.
 - Single PostgreSQL primary; no sharding or failover handling.
 - A restored database backup can leave Redis markers for events the restored database no longer has, so redelivered events are dropped as duplicates until the markers expire; flush the Redis dedupe keys after any restore.
+- While Redis is down in the compose network, one delivery per cool-down (5 s) still pays the name lookup of the stopped container (about 3.5 s on the test machine) when the cache probes Redis again.
 - One shared secret; no rotation. Static API key only.
 - No rate limiting, backpressure or retention policy for stored raw bodies.
 - The provider is simulated; real provider quirks are not covered.

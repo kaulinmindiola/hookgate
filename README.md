@@ -188,7 +188,9 @@ Each run gets a random run id that prefixes its event ids, so runs never collide
 
 - [ADR-001: PostgreSQL is the source of truth](docs/adr/001-postgresql-source-of-truth.md)
 - [ADR-002: RabbitMQ as the broker, separate from the Redis cache](docs/adr/002-rabbitmq-broker.md)
+- [ADR-005: Synchronous SQLAlchemy 2.0 with psycopg 3 everywhere](docs/adr/005-sync-sqlalchemy.md)
 - [ADR-007: Lease plus sweeper instead of broker redelivery](docs/adr/007-lease-and-sweeper.md)
+- [ADR-011: The pure transition() function decides; SQL applies](docs/adr/011-pure-transition-sql-applies.md)
 - [ADR-012: Celery worker uses the thread pool](docs/adr/012-celery-thread-pool.md)
 
 The other decisions are recorded in the SDD (section 7, ADR index, and section 18).
